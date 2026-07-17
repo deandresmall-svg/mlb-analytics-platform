@@ -1,0 +1,15 @@
+[build-system]
+requires=["setuptools>=69","wheel"]
+build-backend="setuptools.build_meta"
+[project]
+name="mlb-github-streamlit-analytics"
+version="1.0.0"
+description="MLB historical data, point-in-time features, calibrated models, and Streamlit dashboard"
+requires-python=">=3.11"
+[tool.setuptools.packages.find]
+where=["src"]
+[tool.pytest.ini_options]
+pythonpath=["src"]
+testpaths=["tests"]
+[tool.ruff]
+line-length=120

@@ -1,0 +1,30 @@
+name: daily-data-sync
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 10 * * *"
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions: {contents: write}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - name: Sync yesterday and today
+        env: {PYTHONPATH: src}
+        run: |
+          python - <<'PY'
+          from datetime import date,timedelta
+          from mlb_analytics.config import settings
+          from mlb_analytics.services.pipeline import AnalyticsService
+          s=AnalyticsService(settings); today=date.today(); print(s.backfill(today-timedelta(days=1),today))
+          PY
+      - name: Commit database when configured for repository persistence
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -f data/mlb_analytics.db || true
+          git diff --cached --quiet || git commit -m "data: daily MLB sync"
+          git push
