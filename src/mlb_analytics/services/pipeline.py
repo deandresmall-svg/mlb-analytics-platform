@@ -39,7 +39,11 @@ class AnalyticsService:
   return {'games':synced,'boxscores':boxes}
  def datasets(self):
   games=self.repo.completed_games();team=self.repo.query('SELECT * FROM team_game_stats');pitch=self.repo.query('SELECT * FROM pitcher_game_stats');bat=self.repo.query('SELECT * FROM player_game_batting')
-  return build_game_features(games,team,pitch),build_batter_training(bat),build_pitcher_k_training(pitch)
+  return (
+    build_game_features(games, team, pitch),
+    build_batter_training(bat, pitch),
+    build_pitcher_k_training(pitch),
+)
  def train_all(self):
   game,bat,k=self.datasets();out={}
   targets=[('home_win',game,FEATURES,'label',BinaryTimeModel(self.s.calibration_method)),('hit',bat,HIT_FEATURES,'hit',BinaryTimeModel(self.s.calibration_method)),('home_run',bat,HR_FEATURES,'home_run',BinaryTimeModel(self.s.calibration_method)),('strikeouts',k,K_FEATURES,'strikeouts',CountTimeModel())]

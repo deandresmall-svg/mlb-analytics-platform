@@ -48,6 +48,19 @@ def safe_divide(numerator: float, denominator: float) -> float:
     return float(numerator) / float(denominator)
 
 
+def streamlit_safe_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy that PyArrow can serialize safely for Streamlit."""
+    output = frame.copy()
+
+    for column in output.columns:
+        if output[column].dtype == "object":
+            output[column] = output[column].map(
+                lambda value: "N/A" if pd.isna(value) else str(value)
+            )
+
+    return output
+
+
 def load_table(service: AnalyticsService, table_name: str) -> pd.DataFrame:
     """Load a database table without crashing the Streamlit page."""
     try:
@@ -281,8 +294,8 @@ def display_batter_table(
         )
 
     st.dataframe(
-        output,
-        use_container_width=True,
+        streamlit_safe_dataframe(output),
+        width="stretch",
         hide_index=True,
     )
 
@@ -362,7 +375,7 @@ with sync_col:
     if st.button(
         "Sync slate",
         type="primary",
-        use_container_width=True,
+        width="stretch",
     ):
         try:
             svc.sync_schedule(slate_date)
@@ -374,12 +387,27 @@ with sync_col:
 with train_col:
     if st.button(
         "Train all models",
-        use_container_width=True,
+        width="stretch",
     ):
         try:
-            st.json(svc.train_all())
+            print("TRAIN ALL MODELS STARTED", flush=True)
+
+            with st.spinner(
+                "Training moneyline, hits, home runs, and pitcher models..."
+            ):
+                training_results = svc.train_all()
+
+            st.session_state["latest_training_results"] = training_results
+            print("TRAIN ALL MODELS COMPLETED", flush=True)
+            st.success("All models trained successfully.")
+
         except Exception as exc:
+            print(f"MODEL TRAINING FAILED: {exc}", flush=True)
             st.error(f"Model training failed: {exc}")
+
+    if "latest_training_results" in st.session_state:
+        st.subheader("Latest training results")
+        st.json(st.session_state["latest_training_results"])
 
 coverage = svc.repo.coverage()
 database_games = 0
@@ -443,8 +471,8 @@ if "confidence" in table.columns:
 
 st.subheader("Today's slate")
 st.dataframe(
-    table,
-    use_container_width=True,
+    streamlit_safe_dataframe(table),
+    width="stretch",
     hide_index=True,
 )
 
@@ -679,9 +707,20 @@ with moneyline_tab:
                 )
 
             with st.expander("View complete feature row"):
+                feature_table = (
+                    selected_features
+                    .rename_axis("Feature")
+                    .reset_index(name="Value")
+                )
+                feature_table["Feature"] = feature_table["Feature"].astype(str)
+                feature_table["Value"] = feature_table["Value"].map(
+                    lambda value: "N/A" if pd.isna(value) else str(value)
+                )
+
                 st.dataframe(
-                    selected_features.to_frame("Value"),
-                    use_container_width=True,
+                    feature_table,
+                    width="stretch",
+                    hide_index=True,
                 )
 
         st.caption(
@@ -752,3 +791,4 @@ st.warning(
     "Models require a historical backfill before their probabilities are "
     "meaningful. No slip optimizer is included."
 )
+

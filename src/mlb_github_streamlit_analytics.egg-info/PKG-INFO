@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: mlb-github-streamlit-analytics
+Version: 1.0.0
+Summary: MLB historical data, point-in-time features, calibrated models, and Streamlit dashboard
+Requires-Python: >=3.11
+License-File: LICENSE
+Dynamic: license-file
