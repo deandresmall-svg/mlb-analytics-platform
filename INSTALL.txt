@@ -1,14 +1,12 @@
-PHASE 1 ODDS API — CLEAN BUILD, NO STATCAST, DATE FORMAT FIX
+STATCAST NULL-INTEGER FIX
 
-1. Put this ZIP in the repository root.
-2. Extract it:
-     unzip -o mlb-phase1-odds-no-statcast-datefix.zip
-3. Set the API key in the active terminal:
-     export ODDS_API_KEY="your_actual_key"
-4. Restart Streamlit:
-     pkill -f streamlit
-     streamlit run app/Home.py --server.port 8502
-5. Open Best Bets and click Refresh sportsbook odds.
+From the project root:
 
-This build formats commenceTimeFrom/commenceTimeTo exactly as
-YYYY-MM-DDTHH:MM:SSZ to prevent HTTP 422 date-validation errors.
+  unzip -o mlb-phase2-statcast-na-fix.zip
+  python -m py_compile src/mlb_analytics/data/statcast.py
+  pkill -f streamlit
+  streamlit run app/Home.py --server.port 8502
+
+Then retry one completed date on Data Sources with Days per download chunk = 1.
+
+This fix treats missing Statcast zone/launch measurements as false indicator flags instead of attempting to convert pandas NA values directly to integers.

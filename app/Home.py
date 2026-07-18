@@ -309,39 +309,61 @@ def display_batter_predictions(
     team_rows = predictions.loc[predictions.get("team") == team].copy()
     probability_column = f"{target}_probability"
     confidence_column = f"{target}_confidence"
+    score_column = f"{target}_score"
+    score_label_column = f"{target}_score_label"
+    score_confidence_column = f"{target}_score_confidence"
 
     if team_rows.empty or probability_column not in team_rows.columns:
         st.info("No live prediction rows are available for this team.")
         return
 
-    team_rows = team_rows.sort_values(probability_column, ascending=False)
-    output = team_rows[
-        [
-            "player_name",
-            probability_column,
-            "batting_order",
-            "projected_pa",
-            "opponent_pitcher",
-            confidence_column,
-            "lineup_status",
-        ]
-    ].copy()
-    output.columns = [
-        "Player",
-        "Probability",
-        "Projected order",
-        "Projected PA",
-        "Opposing starter",
-        "Confidence",
-        "Lineup status",
+    team_rows = team_rows.sort_values(
+        [probability_column, score_column],
+        ascending=False,
+    )
+    selected_columns = [
+        "player_name",
+        probability_column,
+        score_column,
+        score_label_column,
+        score_confidence_column,
+        "batting_order",
+        "projected_pa",
+        "opponent_pitcher",
+        confidence_column,
+        "lineup_status",
     ]
-    output["Probability"] = output["Probability"].map(format_percent)
-    output["Projected order"] = output["Projected order"].map(
-        lambda value: format_number(value, 1)
-    )
-    output["Projected PA"] = output["Projected PA"].map(
-        lambda value: format_number(value, 2)
-    )
+    selected_columns = [
+        column for column in selected_columns if column in team_rows.columns
+    ]
+    output = team_rows[selected_columns].copy()
+    rename_map = {
+        "player_name": "Player",
+        probability_column: "Probability",
+        score_column: "Score",
+        score_label_column: "Score grade",
+        score_confidence_column: "Score data",
+        "batting_order": "Projected order",
+        "projected_pa": "Projected PA",
+        "opponent_pitcher": "Opposing starter",
+        confidence_column: "Model confidence",
+        "lineup_status": "Lineup status",
+    }
+    output = output.rename(columns=rename_map)
+    if "Probability" in output.columns:
+        output["Probability"] = output["Probability"].map(format_percent)
+    if "Score" in output.columns:
+        output["Score"] = output["Score"].map(
+            lambda value: format_number(value, 1)
+        )
+    if "Projected order" in output.columns:
+        output["Projected order"] = output["Projected order"].map(
+            lambda value: format_number(value, 1)
+        )
+    if "Projected PA" in output.columns:
+        output["Projected PA"] = output["Projected PA"].map(
+            lambda value: format_number(value, 2)
+        )
     st.dataframe(
         streamlit_safe_dataframe(output),
         width="stretch",
@@ -358,13 +380,23 @@ def display_pitcher_projection(
         st.info("No strikeout projection is available for this probable starter.")
         return
     row = rows.iloc[0]
-    st.metric(
+    metrics = st.columns(3)
+    metrics[0].metric(
         "Projected strikeouts",
         format_number(row.get("projected_strikeouts"), 2),
     )
+    metrics[1].metric(
+        "Pitcher K Score",
+        format_number(row.get("pitcher_k_score"), 1),
+    )
+    metrics[2].metric(
+        "Score grade",
+        row.get("pitcher_k_score_label", "Unavailable"),
+    )
     st.caption(
         f"Opponent: {row.get('opponent', 'Unknown')} · "
-        "Projection uses the pitcher's recent starting history."
+        f"Score data confidence: {row.get('pitcher_k_score_confidence', 'Low')} · "
+        "Projection and score are separate outputs."
     )
 
 def display_pitcher_metrics(
@@ -810,8 +842,8 @@ with moneyline_tab:
 with hits_tab:
     st.subheader("Model 1+ hit probabilities")
     st.caption(
-        "Players and batting order are projected from recent games until "
-        "confirmed lineups are connected."
+        "Model probability and the 0–100 Hit Score are separate. The score "
+        "summarizes recent contact, opportunity, Statcast quality, and matchup."
     )
 
     away_hit_tab, home_hit_tab = st.tabs(
@@ -835,8 +867,8 @@ with hits_tab:
 with hr_tab:
     st.subheader("Model home-run probabilities")
     st.caption(
-        "These are calibrated model outputs using current rolling and "
-        "opposing-starter features. Confirmed lineups and Statcast are next."
+        "Model probability is the calibrated event estimate. The 0–100 HR "
+        "Score grades power, Statcast contact quality, opportunity, and matchup."
     )
 
     away_hr_tab, home_hr_tab = st.tabs(

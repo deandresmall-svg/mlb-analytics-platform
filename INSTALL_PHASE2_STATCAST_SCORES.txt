@@ -1,0 +1,67 @@
+PHASE 2: STATCAST FOUNDATION + 0-100 SCORE SYSTEM
+================================================
+
+This update overlays the current working Odds API project.
+It does not replace your database or saved models.
+
+INSTALL
+-------
+1. Put mlb-phase2-statcast-scores.zip in the project root.
+2. In the Codespaces terminal run:
+
+   cd /workspaces/mlb-moneyline-model-
+   unzip -o mlb-phase2-statcast-scores.zip
+
+3. Check that the update compiles:
+
+   PYTHONPATH=src python -m py_compile \
+     src/mlb_analytics/data/statcast.py \
+     src/mlb_analytics/features/statcast_features.py \
+     src/mlb_analytics/features/scores.py \
+     src/mlb_analytics/services/pipeline.py \
+     app/pages/6_Data_Sources.py
+
+4. Restart Streamlit:
+
+   pkill -f streamlit
+   streamlit run app/Home.py --server.port 8502
+
+FIRST STATCAST TEST
+-------------------
+1. Open the new Data Sources page in the Streamlit sidebar.
+2. Select one completed MLB date only.
+3. Keep Days per download chunk at 1.
+4. Click Sync Statcast range.
+5. Confirm the page reports pitch rows plus batter-game and pitcher-game rows.
+
+HISTORICAL SYNC
+---------------
+After the one-day test succeeds, sync the same historical range as the boxscore
+backfill. For this project that should start around 2026-04-01 and end yesterday.
+Use 3-day chunks. Successful chunks are saved as the sync progresses, so a
+failed range can be resumed.
+
+RETRAINING
+----------
+Your existing saved models remain usable before the Statcast sync and retrain.
+The new scores will appear immediately, but Statcast Data Confidence will remain
+Low until enough Statcast rows are stored.
+
+After the historical sync completes:
+1. Return to Home.
+2. Click Train all models once.
+3. Compare the new holdout AUC/MAE with the previous results.
+
+SCORE INTERPRETATION
+--------------------
+The Hit Score, HR Score, and K Score are 0-100 matchup-quality scores. They are
+not probabilities and are kept separate from calibrated model probability,
+market no-vig probability, edge, and EV.
+
+Score grades:
+  85-100  Elite
+  70-84   Strong
+  55-69   Favorable
+  45-54   Neutral
+  30-44   Weak
+  0-29    Poor

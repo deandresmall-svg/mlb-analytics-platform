@@ -3,6 +3,16 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from mlb_analytics.features.statcast_features import (
+    BATTER_HIT_STATCAST_FEATURES,
+    BATTER_HR_STATCAST_FEATURES,
+    PITCHER_K_STATCAST_FEATURES,
+    batter_statcast_features,
+    opponent_pitcher_statcast_features,
+    pitcher_statcast_features,
+    index_statcast_games,
+)
+
 
 HIT_FEATURES = [
     "hit_rate_5",
@@ -137,6 +147,10 @@ K_FEATURES = [
     "pitcher_games_prior",
 ]
 
+HIT_FEATURES += BATTER_HIT_STATCAST_FEATURES
+HR_FEATURES += BATTER_HR_STATCAST_FEATURES
+K_FEATURES += PITCHER_K_STATCAST_FEATURES
+
 
 def _numeric(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(0.0)
@@ -167,6 +181,19 @@ def _positive_game_rate(
     if frame.empty or column not in frame.columns:
         return 0.0
     return float((_numeric(frame[column]) > threshold).mean())
+
+
+def _index_player_games(frame: pd.DataFrame) -> dict[int, pd.DataFrame]:
+    if frame.empty or "player_id" not in frame.columns:
+        return {}
+    data = frame.copy()
+    data["player_id"] = pd.to_numeric(data["player_id"], errors="coerce")
+    data["game_date"] = pd.to_datetime(data.get("game_date"), errors="coerce")
+    data = data.dropna(subset=["player_id", "game_date"])
+    output: dict[int, pd.DataFrame] = {}
+    for player_id, group in data.groupby("player_id", sort=False):
+        output[int(player_id)] = group.sort_values(["game_date", "game_pk"]).reset_index(drop=True)
+    return output
 
 
 def _batting_features(prior: pd.DataFrame) -> dict[str, float]:
@@ -316,7 +343,7 @@ def _batting_features(prior: pd.DataFrame) -> dict[str, float]:
 
 
 def _opponent_starter_features(
-    pitching: pd.DataFrame,
+    pitching: pd.DataFrame | dict[int, pd.DataFrame],
     pitcher_id,
     game_date,
 ) -> dict[str, float]:
@@ -332,30 +359,43 @@ def _opponent_starter_features(
         "opponent_sp_innings_5": 5.0,
     }
 
-    if (
-        pitching.empty
-        or pd.isna(pitcher_id)
-        or "player_id" not in pitching.columns
-        or "game_date" not in pitching.columns
-    ):
+    if pd.isna(pitcher_id):
         return defaults
 
-    ids = pd.to_numeric(pitching["player_id"], errors="coerce")
-    dates = pd.to_datetime(pitching["game_date"], errors="coerce")
-    starts = (
-        pd.to_numeric(pitching["games_started"], errors="coerce").fillna(0)
-        if "games_started" in pitching.columns
-        else pd.Series(1, index=pitching.index)
-    )
-
-    history = pitching.loc[
-        (ids == float(pitcher_id))
-        & (dates < pd.Timestamp(game_date))
-        & (starts > 0)
-    ].copy()
-
-    history["_date"] = dates.loc[history.index]
-    history = history.sort_values("_date").tail(5)
+    if isinstance(pitching, dict):
+        history = pitching.get(int(float(pitcher_id)), pd.DataFrame()).copy()
+        if history.empty:
+            return defaults
+        dates = pd.to_datetime(history["game_date"], errors="coerce")
+        starts = pd.to_numeric(
+            history.get("games_started", 1), errors="coerce"
+        ).fillna(0)
+        history = history.loc[
+            (dates < pd.Timestamp(game_date)) & (starts > 0)
+        ].copy()
+        history["_date"] = dates.loc[history.index]
+        history = history.sort_values("_date").tail(5)
+    else:
+        if (
+            pitching.empty
+            or "player_id" not in pitching.columns
+            or "game_date" not in pitching.columns
+        ):
+            return defaults
+        ids = pd.to_numeric(pitching["player_id"], errors="coerce")
+        dates = pd.to_datetime(pitching["game_date"], errors="coerce")
+        starts = (
+            pd.to_numeric(pitching["games_started"], errors="coerce").fillna(0)
+            if "games_started" in pitching.columns
+            else pd.Series(1, index=pitching.index)
+        )
+        history = pitching.loc[
+            (ids == float(pitcher_id))
+            & (dates < pd.Timestamp(game_date))
+            & (starts > 0)
+        ].copy()
+        history["_date"] = dates.loc[history.index]
+        history = history.sort_values("_date").tail(5)
 
     if history.empty:
         return defaults
@@ -431,9 +471,20 @@ def _lineup_features(current_game: pd.Series, prior: pd.DataFrame) -> dict[str, 
 def build_batter_training(
     batting: pd.DataFrame,
     pitching: pd.DataFrame | None = None,
+    batter_statcast: pd.DataFrame | None = None,
+    pitcher_statcast: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     rows: list[dict] = []
     pitching = pitching.copy() if pitching is not None else pd.DataFrame()
+    batter_statcast = (
+        batter_statcast.copy() if batter_statcast is not None else pd.DataFrame()
+    )
+    pitcher_statcast = (
+        pitcher_statcast.copy() if pitcher_statcast is not None else pd.DataFrame()
+    )
+    pitching_index = _index_player_games(pitching)
+    batter_statcast_index = index_statcast_games(batter_statcast)
+    pitcher_statcast_index = index_statcast_games(pitcher_statcast)
 
     if batting.empty:
         return pd.DataFrame(
@@ -487,7 +538,17 @@ def build_batter_training(
                     **_batting_features(prior),
                     **_lineup_features(current_game, prior),
                     **_opponent_starter_features(
-                        pitching,
+                        pitching_index,
+                        opponent_pitcher_id,
+                        current_game["game_date"],
+                    ),
+                    **batter_statcast_features(
+                        batter_statcast_index,
+                        player_id,
+                        current_game["game_date"],
+                    ),
+                    **opponent_pitcher_statcast_features(
+                        pitcher_statcast_index,
                         opponent_pitcher_id,
                         current_game["game_date"],
                     ),
@@ -518,6 +579,8 @@ def build_batter_prediction_rows(
     opponent_pitcher_id,
     game_date,
     side: str,
+    batter_statcast: pd.DataFrame | None = None,
+    pitcher_statcast: pd.DataFrame | None = None,
     max_players: int = 9,
 ) -> pd.DataFrame:
     """Build point-in-time feature rows for likely active hitters.
@@ -529,6 +592,15 @@ def build_batter_prediction_rows(
     if batting.empty:
         return pd.DataFrame()
 
+    batter_statcast = (
+        batter_statcast.copy() if batter_statcast is not None else pd.DataFrame()
+    )
+    pitcher_statcast = (
+        pitcher_statcast.copy() if pitcher_statcast is not None else pd.DataFrame()
+    )
+    pitching_index = _index_player_games(pitching)
+    batter_statcast_index = index_statcast_games(batter_statcast)
+    pitcher_statcast_index = index_statcast_games(pitcher_statcast)
     data = batting.copy()
     data["game_date"] = pd.to_datetime(data["game_date"], errors="coerce")
     cutoff = pd.Timestamp(game_date)
@@ -588,7 +660,13 @@ def build_batter_prediction_rows(
                 **_batting_features(prior),
                 **lineup,
                 **_opponent_starter_features(
-                    pitching, opponent_pitcher_id, cutoff
+                    pitching_index, opponent_pitcher_id, cutoff
+                ),
+                **batter_statcast_features(
+                    batter_statcast_index, candidate["player_id"], cutoff
+                ),
+                **opponent_pitcher_statcast_features(
+                    pitcher_statcast_index, opponent_pitcher_id, cutoff
                 ),
             }
         )
@@ -609,6 +687,7 @@ def build_pitcher_prediction_row(
     pitching: pd.DataFrame,
     pitcher_id,
     game_date,
+    pitcher_statcast: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Build a point-in-time strikeout feature row for a probable starter."""
     if pitching.empty or pd.isna(pitcher_id):
@@ -628,11 +707,19 @@ def build_pitcher_prediction_row(
         return pd.DataFrame()
 
     names = prior.get("player_name", pd.Series(dtype=object)).dropna()
+    pitcher_statcast_index = index_statcast_games(
+        pitcher_statcast if pitcher_statcast is not None else pd.DataFrame()
+    )
     row = {
         "player_id": int(float(pitcher_id)),
         "player_name": names.iloc[-1] if not names.empty else str(pitcher_id),
         "game_date": pd.Timestamp(game_date),
         **_pitcher_features(prior),
+        **pitcher_statcast_features(
+            pitcher_statcast_index,
+            pitcher_id,
+            game_date,
+        ),
     }
     return pd.DataFrame([row])
 
@@ -712,8 +799,15 @@ def _pitcher_features(prior: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def build_pitcher_k_training(pitching: pd.DataFrame) -> pd.DataFrame:
+def build_pitcher_k_training(
+    pitching: pd.DataFrame,
+    pitcher_statcast: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     rows: list[dict] = []
+    pitcher_statcast = (
+        pitcher_statcast.copy() if pitcher_statcast is not None else pd.DataFrame()
+    )
+    pitcher_statcast_index = index_statcast_games(pitcher_statcast)
 
     if pitching.empty:
         return pd.DataFrame(
@@ -758,6 +852,11 @@ def build_pitcher_k_training(pitching: pd.DataFrame) -> pd.DataFrame:
                     "game_date": current_game["game_date"],
                     "strikeouts": float(current_strikeouts),
                     **_pitcher_features(prior),
+                    **pitcher_statcast_features(
+                        pitcher_statcast_index,
+                        player_id,
+                        current_game["game_date"],
+                    ),
                 }
             )
 
