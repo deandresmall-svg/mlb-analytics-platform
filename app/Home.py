@@ -300,6 +300,73 @@ def display_batter_table(
     )
 
 
+
+def display_batter_predictions(
+    predictions: pd.DataFrame,
+    team: str,
+    target: str,
+) -> None:
+    team_rows = predictions.loc[predictions.get("team") == team].copy()
+    probability_column = f"{target}_probability"
+    confidence_column = f"{target}_confidence"
+
+    if team_rows.empty or probability_column not in team_rows.columns:
+        st.info("No live prediction rows are available for this team.")
+        return
+
+    team_rows = team_rows.sort_values(probability_column, ascending=False)
+    output = team_rows[
+        [
+            "player_name",
+            probability_column,
+            "batting_order",
+            "projected_pa",
+            "opponent_pitcher",
+            confidence_column,
+            "lineup_status",
+        ]
+    ].copy()
+    output.columns = [
+        "Player",
+        "Probability",
+        "Projected order",
+        "Projected PA",
+        "Opposing starter",
+        "Confidence",
+        "Lineup status",
+    ]
+    output["Probability"] = output["Probability"].map(format_percent)
+    output["Projected order"] = output["Projected order"].map(
+        lambda value: format_number(value, 1)
+    )
+    output["Projected PA"] = output["Projected PA"].map(
+        lambda value: format_number(value, 2)
+    )
+    st.dataframe(
+        streamlit_safe_dataframe(output),
+        width="stretch",
+        hide_index=True,
+    )
+
+
+def display_pitcher_projection(
+    predictions: pd.DataFrame,
+    team: str,
+) -> None:
+    rows = predictions.loc[predictions.get("team") == team].copy()
+    if rows.empty:
+        st.info("No strikeout projection is available for this probable starter.")
+        return
+    row = rows.iloc[0]
+    st.metric(
+        "Projected strikeouts",
+        format_number(row.get("projected_strikeouts"), 2),
+    )
+    st.caption(
+        f"Opponent: {row.get('opponent', 'Unknown')} · "
+        "Projection uses the pitcher's recent starting history."
+    )
+
 def display_pitcher_metrics(
     pitcher_name: object,
     summary: dict[str, object] | None,
@@ -519,6 +586,18 @@ home_pitcher = pitcher_summary(
     slate_date,
 )
 
+try:
+    batter_predictions = svc.batter_predictions_for_game(selected)
+except Exception as exc:
+    batter_predictions = pd.DataFrame()
+    st.warning(f"Batter prediction pipeline error: {exc}")
+
+try:
+    pitcher_predictions = svc.pitcher_predictions_for_game(selected)
+except Exception as exc:
+    pitcher_predictions = pd.DataFrame()
+    st.warning(f"Pitcher prediction pipeline error: {exc}")
+
 st.divider()
 st.header(f"{selected['away_team']} at {selected['home_team']}")
 
@@ -729,11 +808,10 @@ with moneyline_tab:
         )
 
 with hits_tab:
-    st.subheader("Batter hit indicators")
-    st.warning(
-        "These are historical rolling indicators, not final 1+ hit "
-        "probabilities. Confirmed lineups and a trained live prediction "
-        "pipeline still need to be connected."
+    st.subheader("Model 1+ hit probabilities")
+    st.caption(
+        "Players and batting order are projected from recent games until "
+        "confirmed lineups are connected."
     )
 
     away_hit_tab, home_hit_tab = st.tabs(
@@ -741,17 +819,24 @@ with hits_tab:
     )
 
     with away_hit_tab:
-        display_batter_table(away_batters, "hits")
+        display_batter_predictions(
+            batter_predictions, selected["away_team"], "hit"
+        )
+        with st.expander("View historical hit indicators"):
+            display_batter_table(away_batters, "hits")
 
     with home_hit_tab:
-        display_batter_table(home_batters, "hits")
+        display_batter_predictions(
+            batter_predictions, selected["home_team"], "hit"
+        )
+        with st.expander("View historical hit indicators"):
+            display_batter_table(home_batters, "hits")
 
 with hr_tab:
-    st.subheader("Home-run indicators")
-    st.warning(
-        "These are rolling power indicators, not sportsbook-ready home-run "
-        "probabilities. Statcast quality, pitch-type matchups, confirmed "
-        "lineups, weather, and calibrated HR modeling will be added later."
+    st.subheader("Model home-run probabilities")
+    st.caption(
+        "These are calibrated model outputs using current rolling and "
+        "opposing-starter features. Confirmed lineups and Statcast are next."
     )
 
     away_hr_tab, home_hr_tab = st.tabs(
@@ -759,10 +844,18 @@ with hr_tab:
     )
 
     with away_hr_tab:
-        display_batter_table(away_batters, "hr")
+        display_batter_predictions(
+            batter_predictions, selected["away_team"], "home_run"
+        )
+        with st.expander("View historical power indicators"):
+            display_batter_table(away_batters, "hr")
 
     with home_hr_tab:
-        display_batter_table(home_batters, "hr")
+        display_batter_predictions(
+            batter_predictions, selected["home_team"], "home_run"
+        )
+        with st.expander("View historical power indicators"):
+            display_batter_table(home_batters, "hr")
 
 with pitchers_tab:
     st.subheader("Probable starter indicators")
@@ -776,12 +869,18 @@ with pitchers_tab:
     )
 
     with away_pitcher_tab:
+        display_pitcher_projection(
+            pitcher_predictions, selected["away_team"]
+        )
         display_pitcher_metrics(
             selected.get("away_probable_pitcher", "TBD"),
             away_pitcher,
         )
 
     with home_pitcher_tab:
+        display_pitcher_projection(
+            pitcher_predictions, selected["home_team"]
+        )
         display_pitcher_metrics(
             selected.get("home_probable_pitcher", "TBD"),
             home_pitcher,

@@ -1,0 +1,14 @@
+PHASE 1 ODDS API — NO STATCAST
+
+1. Put this ZIP in the project root.
+2. Run:
+   unzip -o mlb-phase1-odds-no-statcast.zip
+3. Set your key for the current terminal:
+   export ODDS_API_KEY="your_actual_key"
+4. Restart Streamlit:
+   pkill -f streamlit
+   streamlit run app/Home.py --server.port 8502
+5. Open Best Bets and click Refresh sportsbook odds.
+
+This build removes StatcastClient initialization, Statcast database queries,
+and the sync_statcast method. It retains the Odds API integration.

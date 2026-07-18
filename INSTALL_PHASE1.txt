@@ -1,0 +1,20 @@
+MLB Analytics Platform - Verified Phase 1 Odds API Integration
+
+1. Put this ZIP in the project root.
+2. From the project root run:
+   unzip -o mlb-phase1-odds-api-verified.zip
+3. Configure ODDS_API_KEY as a Codespaces secret, then restart the Codespace.
+   For a temporary terminal-only test:
+   export ODDS_API_KEY="your_key_here"
+4. Restart Streamlit:
+   pkill -f streamlit
+   streamlit run app/Home.py --server.port 8502
+5. Open the Best Bets page and press Refresh sportsbook odds once.
+
+Optional settings:
+ODDS_REGIONS=us
+ODDS_BOOKMAKERS=
+
+Validation completed against the current project copy:
+- Python compileall passed
+- pytest: 5 passed

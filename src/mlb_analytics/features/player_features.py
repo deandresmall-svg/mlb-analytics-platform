@@ -510,6 +510,132 @@ def build_batter_training(
     return result
 
 
+
+def build_batter_prediction_rows(
+    batting: pd.DataFrame,
+    pitching: pd.DataFrame,
+    team_id: int,
+    opponent_pitcher_id,
+    game_date,
+    side: str,
+    max_players: int = 9,
+) -> pd.DataFrame:
+    """Build point-in-time feature rows for likely active hitters.
+
+    Until confirmed lineups are available, likely hitters are selected from the
+    most recent team appearances and their batting order is estimated from the
+    median of their last ten recorded lineup spots.
+    """
+    if batting.empty:
+        return pd.DataFrame()
+
+    data = batting.copy()
+    data["game_date"] = pd.to_datetime(data["game_date"], errors="coerce")
+    cutoff = pd.Timestamp(game_date)
+    team_history = data.loc[
+        (pd.to_numeric(data["team_id"], errors="coerce") == int(team_id))
+        & (data["game_date"] < cutoff)
+    ].copy()
+
+    if team_history.empty:
+        return pd.DataFrame()
+
+    candidates = []
+    for player_id, history in team_history.groupby("player_id"):
+        history = history.sort_values(["game_date", "game_pk"]).tail(30)
+        if len(history) < 3:
+            continue
+        recent = history.tail(10)
+        candidates.append(
+            {
+                "player_id": player_id,
+                "player_name": history["player_name"].dropna().iloc[-1]
+                if history["player_name"].notna().any()
+                else str(player_id),
+                "last_game": history["game_date"].max(),
+                "recent_pa": _sum(recent, "plate_appearances"),
+                "history": history,
+            }
+        )
+
+    if not candidates:
+        return pd.DataFrame()
+
+    candidates.sort(
+        key=lambda row: (row["last_game"], row["recent_pa"]),
+        reverse=True,
+    )
+    candidates = candidates[:max_players]
+
+    rows = []
+    for candidate in candidates:
+        prior = candidate["history"]
+        current = pd.Series(
+            {
+                "batting_order": np.nan,
+                "side": side,
+            }
+        )
+        lineup = _lineup_features(current, prior)
+        rows.append(
+            {
+                "player_id": candidate["player_id"],
+                "player_name": candidate["player_name"],
+                "team_id": int(team_id),
+                "game_date": cutoff,
+                "opponent_pitcher_id": opponent_pitcher_id,
+                "lineup_status": "Projected from recent games",
+                **_batting_features(prior),
+                **lineup,
+                **_opponent_starter_features(
+                    pitching, opponent_pitcher_id, cutoff
+                ),
+            }
+        )
+
+    result = pd.DataFrame(rows)
+    all_features = sorted(set(HIT_FEATURES + HR_FEATURES))
+    for feature in all_features:
+        if feature not in result.columns:
+            result[feature] = np.nan
+        result[feature] = pd.to_numeric(result[feature], errors="coerce")
+
+    return result.sort_values(
+        ["batting_order", "projected_pa"], ascending=[True, False]
+    ).reset_index(drop=True)
+
+
+def build_pitcher_prediction_row(
+    pitching: pd.DataFrame,
+    pitcher_id,
+    game_date,
+) -> pd.DataFrame:
+    """Build a point-in-time strikeout feature row for a probable starter."""
+    if pitching.empty or pd.isna(pitcher_id):
+        return pd.DataFrame()
+
+    data = pitching.copy()
+    data["game_date"] = pd.to_datetime(data["game_date"], errors="coerce")
+    ids = pd.to_numeric(data["player_id"], errors="coerce")
+    starts = pd.to_numeric(data.get("games_started", 1), errors="coerce").fillna(0)
+    prior = data.loc[
+        (ids == float(pitcher_id))
+        & (data["game_date"] < pd.Timestamp(game_date))
+        & (starts > 0)
+    ].sort_values(["game_date", "game_pk"]).tail(10)
+
+    if len(prior) < 2:
+        return pd.DataFrame()
+
+    names = prior.get("player_name", pd.Series(dtype=object)).dropna()
+    row = {
+        "player_id": int(float(pitcher_id)),
+        "player_name": names.iloc[-1] if not names.empty else str(pitcher_id),
+        "game_date": pd.Timestamp(game_date),
+        **_pitcher_features(prior),
+    }
+    return pd.DataFrame([row])
+
 def _pitcher_features(prior: pd.DataFrame) -> dict[str, float]:
     p3 = prior.tail(3)
     p5 = prior.tail(5)

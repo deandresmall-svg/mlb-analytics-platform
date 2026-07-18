@@ -29,3 +29,6 @@ class CountTimeModel:
   self.model.fit(tr[features],tr[label]);p=np.maximum(self.model.predict(te[features]),0);return Metrics(len(d),mae=mean_absolute_error(te[label],p))
  def predict(self,x):return np.maximum(self.model.predict(x),0)
  def save(self,path,meta):Path(path).parent.mkdir(parents=True,exist_ok=True);joblib.dump({'model':self.model,'meta':meta},path)
+ @classmethod
+ def load(cls,path):
+  o=cls();d=joblib.load(path);o.model=d['model'];return o
