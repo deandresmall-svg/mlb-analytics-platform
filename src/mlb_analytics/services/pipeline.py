@@ -16,6 +16,7 @@ from mlb_analytics.data.statcast import (
     StatcastClient,
     aggregate_statcast,
     chunk_ranges,
+    prepare_statcast,
 )
 from mlb_analytics.data.venues import venue_info
 from mlb_analytics.data.weather import WeatherClient
@@ -219,9 +220,13 @@ class AnalyticsService:
         end: date,
     ) -> dict[str, int]:
         pitches = self.repo.statcast_pitches_between(start, end)
-        aggregates = aggregate_statcast(pitches)
+        corrected_pitches = prepare_statcast(pitches)
+        aggregates = aggregate_statcast(corrected_pitches)
         return {
-            "pitches_read": len(pitches),
+            "pitches_read": len(corrected_pitches),
+            "pitch_flags_updated": self.repo.upsert_statcast_pitches(
+                corrected_pitches
+            ),
             "batter_games": self.repo.upsert_statcast_batters(
                 aggregates["batters"]
             ),

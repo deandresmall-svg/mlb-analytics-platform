@@ -208,6 +208,67 @@ def _mode_or_default(series: pd.Series, default: str = "U") -> str:
     return str(modes.iloc[0]) if not modes.empty else str(values.iloc[-1])
 
 
+
+def _flag(values: pd.Series) -> pd.Series:
+    """Convert a nullable boolean series into a compact 0/1 integer flag."""
+    return values.astype("boolean").fillna(False).astype("int8")
+
+
+def recompute_statcast_flags(data: pd.DataFrame) -> pd.DataFrame:
+    """Rebuild all reusable pitch flags from the raw Savant columns.
+
+    Baseball Savant can publish exit velocity on foul contact. Those rows are
+    not official batted-ball events and must not enter BBE, hard-hit, barrel,
+    sweet-spot, or batted-ball-type denominators. A measured BBE therefore
+    requires both ``type == "X"`` (ball put into play) and a non-null launch
+    speed.
+
+    This function is also used when rebuilding aggregates from stored pitches,
+    so historical rows downloaded before this fix are corrected without having
+    to download them again.
+    """
+    output = data.copy()
+
+    descriptions = output["description"].fillna("").astype(str).str.lower()
+    pitch_result = output["type"].fillna("").astype(str).str.upper()
+    zone = pd.to_numeric(output["zone"], errors="coerce")
+    launch_speed = pd.to_numeric(output["launch_speed"], errors="coerce")
+    launch_angle = pd.to_numeric(output["launch_angle"], errors="coerce")
+    launch_speed_angle = pd.to_numeric(
+        output["launch_speed_angle"], errors="coerce"
+    )
+    bb_type = output["bb_type"].fillna("").astype(str).str.lower()
+
+    is_swing = descriptions.isin(SWING_DESCRIPTIONS)
+    is_whiff = descriptions.isin(WHIFF_DESCRIPTIONS)
+    is_called_strike = descriptions.isin(CALLED_STRIKE_DESCRIPTIONS)
+    is_in_zone = zone.between(1, 9, inclusive="both")
+    is_out_zone = zone.notna() & ~is_in_zone
+
+    # Statcast's pitch-result code X means the ball was put into play. Requiring
+    # a measured launch speed keeps the denominator aligned with the contact
+    # metrics used by Baseball Savant and excludes tracked foul-ball contact.
+    is_bbe = pitch_result.eq("X") & launch_speed.notna()
+
+    output["is_swing"] = _flag(is_swing)
+    output["is_whiff"] = _flag(is_whiff)
+    output["is_called_strike"] = _flag(is_called_strike)
+    output["is_in_zone"] = _flag(is_in_zone)
+    output["is_out_zone"] = _flag(is_out_zone)
+    output["is_chase"] = _flag(is_swing & is_out_zone)
+    output["is_bbe"] = _flag(is_bbe)
+    output["is_hard_hit"] = _flag(is_bbe & launch_speed.ge(95.0))
+    output["is_barrel"] = _flag(is_bbe & launch_speed_angle.eq(6))
+    output["is_sweet_spot"] = _flag(
+        is_bbe & launch_angle.between(8.0, 32.0, inclusive="both")
+    )
+    output["is_ground_ball"] = _flag(is_bbe & bb_type.eq("ground_ball"))
+    output["is_fly_ball"] = _flag(is_bbe & bb_type.eq("fly_ball"))
+    output["is_line_drive"] = _flag(is_bbe & bb_type.eq("line_drive"))
+    output["is_popup"] = _flag(is_bbe & bb_type.eq("popup"))
+
+    return output
+
 def prepare_statcast(frame: pd.DataFrame) -> pd.DataFrame:
     """Normalize a Baseball Savant CSV and add reusable pitch flags."""
     if frame.empty:
@@ -252,45 +313,7 @@ def prepare_statcast(frame: pd.DataFrame) -> pd.DataFrame:
         subset=["game_pk", "game_date", "at_bat_number", "pitch_number", "batter", "pitcher"]
     ).copy()
 
-    descriptions = data["description"].fillna("").str.lower()
-    zone = pd.to_numeric(data["zone"], errors="coerce")
-    is_swing = descriptions.isin(SWING_DESCRIPTIONS)
-    is_whiff = descriptions.isin(WHIFF_DESCRIPTIONS)
-    is_called_strike = descriptions.isin(CALLED_STRIKE_DESCRIPTIONS)
-    is_in_zone = zone.between(1, 9, inclusive="both")
-    is_out_zone = zone.notna() & ~is_in_zone
-    launch_speed = pd.to_numeric(data["launch_speed"], errors="coerce")
-    launch_angle = pd.to_numeric(data["launch_angle"], errors="coerce")
-    launch_speed_angle = pd.to_numeric(data["launch_speed_angle"], errors="coerce")
-
-    def flag(values: pd.Series) -> pd.Series:
-        # Baseball Savant legitimately leaves fields such as zone and launch
-        # angle blank. Pandas represents comparisons on nullable integer
-        # columns as nullable booleans, and converting those directly to int
-        # raises ``ValueError: cannot convert NA to integer``. Treat missing
-        # measurements as a false flag while retaining the raw null value.
-        return values.astype("boolean").fillna(False).astype("int8")
-
-    data["is_swing"] = flag(is_swing)
-    data["is_whiff"] = flag(is_whiff)
-    data["is_called_strike"] = flag(is_called_strike)
-    data["is_in_zone"] = flag(is_in_zone)
-    data["is_out_zone"] = flag(is_out_zone)
-    data["is_chase"] = flag(is_swing & is_out_zone)
-    data["is_bbe"] = flag(launch_speed.notna())
-    data["is_hard_hit"] = flag(launch_speed >= 95.0)
-    data["is_barrel"] = flag(launch_speed_angle.eq(6))
-    data["is_sweet_spot"] = flag(
-        launch_angle.between(8.0, 32.0, inclusive="both")
-    )
-    data["is_ground_ball"] = flag(
-        data["bb_type"].fillna("").eq("ground_ball")
-    )
-    data["is_fly_ball"] = flag(data["bb_type"].fillna("").eq("fly_ball"))
-    data["is_line_drive"] = flag(
-        data["bb_type"].fillna("").eq("line_drive")
-    )
-    data["is_popup"] = flag(data["bb_type"].fillna("").eq("popup"))
+    data = recompute_statcast_flags(data)
 
     for column in ["game_pk", "at_bat_number", "pitch_number", "batter", "pitcher"]:
         data[column] = data[column].astype(int)
@@ -316,6 +339,11 @@ def _safe_max(group: pd.DataFrame, column: str) -> float | None:
 
 
 def _aggregate_common(group: pd.DataFrame) -> dict[str, float | int | None]:
+    # Contact-quality and expected-stat fields are meaningful only for measured
+    # balls put into play. Restricting these calculations to BBE rows prevents
+    # foul contact with tracked exit velocity from inflating denominators.
+    bbe_group = group.loc[pd.to_numeric(group["is_bbe"], errors="coerce").fillna(0).eq(1)]
+
     return {
         "pitches": int(len(group)),
         "plate_appearances": int(group["at_bat_number"].nunique()),
@@ -326,11 +354,11 @@ def _aggregate_common(group: pd.DataFrame) -> dict[str, float | int | None]:
         "out_zone_pitches": int(group["is_out_zone"].sum()),
         "chases": int(group["is_chase"].sum()),
         "bbe": int(group["is_bbe"].sum()),
-        "launch_speed_sum": _safe_sum(group, "launch_speed"),
-        "launch_speed_count": _safe_count(group, "launch_speed"),
-        "max_exit_velocity": _safe_max(group, "launch_speed"),
-        "launch_angle_sum": _safe_sum(group, "launch_angle"),
-        "launch_angle_count": _safe_count(group, "launch_angle"),
+        "launch_speed_sum": _safe_sum(bbe_group, "launch_speed"),
+        "launch_speed_count": _safe_count(bbe_group, "launch_speed"),
+        "max_exit_velocity": _safe_max(bbe_group, "launch_speed"),
+        "launch_angle_sum": _safe_sum(bbe_group, "launch_angle"),
+        "launch_angle_count": _safe_count(bbe_group, "launch_angle"),
         "hard_hits": int(group["is_hard_hit"].sum()),
         "barrels": int(group["is_barrel"].sum()),
         "sweet_spot": int(group["is_sweet_spot"].sum()),
@@ -338,12 +366,12 @@ def _aggregate_common(group: pd.DataFrame) -> dict[str, float | int | None]:
         "fly_balls": int(group["is_fly_ball"].sum()),
         "line_drives": int(group["is_line_drive"].sum()),
         "popups": int(group["is_popup"].sum()),
-        "xba_sum": _safe_sum(group, "estimated_ba_using_speedangle"),
-        "xba_count": _safe_count(group, "estimated_ba_using_speedangle"),
-        "xslg_sum": _safe_sum(group, "estimated_slg_using_speedangle"),
-        "xslg_count": _safe_count(group, "estimated_slg_using_speedangle"),
-        "xwoba_sum": _safe_sum(group, "estimated_woba_using_speedangle"),
-        "xwoba_count": _safe_count(group, "estimated_woba_using_speedangle"),
+        "xba_sum": _safe_sum(bbe_group, "estimated_ba_using_speedangle"),
+        "xba_count": _safe_count(bbe_group, "estimated_ba_using_speedangle"),
+        "xslg_sum": _safe_sum(bbe_group, "estimated_slg_using_speedangle"),
+        "xslg_count": _safe_count(bbe_group, "estimated_slg_using_speedangle"),
+        "xwoba_sum": _safe_sum(bbe_group, "estimated_woba_using_speedangle"),
+        "xwoba_count": _safe_count(bbe_group, "estimated_woba_using_speedangle"),
         "release_speed_sum": _safe_sum(group, "release_speed"),
         "release_speed_count": _safe_count(group, "release_speed"),
         "max_release_speed": _safe_max(group, "release_speed"),
@@ -382,6 +410,10 @@ def aggregate_statcast(data: pd.DataFrame) -> dict[str, pd.DataFrame]:
             "batter_pitch_types": pd.DataFrame(),
             "pitcher_pitch_types": pd.DataFrame(),
         }
+
+    # Recompute flags here as well so aggregate rebuilds correct historical
+    # rows that were stored before the BBE definition was tightened.
+    data = recompute_statcast_flags(data)
 
     batters = _aggregate_groups(
         data,

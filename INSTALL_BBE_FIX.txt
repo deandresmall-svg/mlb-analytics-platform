@@ -1,0 +1,21 @@
+MLB Statcast BBE Definition Fix
+
+This patch corrects batted-ball event flags so foul contact with tracked exit
+velocity is excluded from BBE, hard-hit, barrel, sweet-spot, and batted-ball-type
+metrics.
+
+Install from the project root:
+
+  unzip -o mlb-statcast-bbe-definition-fix.zip
+  python -m py_compile src/mlb_analytics/data/statcast.py \
+      src/mlb_analytics/services/pipeline.py app/pages/6_Data_Sources.py
+  pkill -f streamlit
+  streamlit run app/Home.py --server.port 8502
+
+After the app restarts:
+1. Open Data Sources.
+2. Enter the full stored Statcast range (for example 2026-04-01 to 2026-07-17).
+3. Click "Rebuild aggregates from stored pitches".
+4. Do not re-download the range; the rebuild corrects the stored flags and all
+   aggregate tables from the existing pitch data.
+5. Retrain all models only after the rebuild succeeds.

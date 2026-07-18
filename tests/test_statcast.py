@@ -68,6 +68,7 @@ def sample_pitches() -> pd.DataFrame:
                 "stand": "L",
                 "p_throws": "R",
                 "description": "hit_into_play",
+                "type": "X",
                 "events": "home_run",
                 "pitch_type": "FF",
                 "zone": 5,
@@ -160,3 +161,46 @@ def test_prepare_statcast_handles_missing_nullable_measurements():
     assert pitches.loc[0, "is_hard_hit"] == 0
     assert pitches.loc[0, "is_barrel"] == 0
     assert pitches.loc[0, "is_sweet_spot"] == 0
+
+
+def test_foul_contact_with_exit_velocity_is_not_a_bbe():
+    frame = sample_pitches()
+    foul = {
+        "game_pk": 1,
+        "game_date": "2026-07-01",
+        "game_type": "R",
+        "at_bat_number": 2,
+        "pitch_number": 1,
+        "batter": 100,
+        "pitcher": 200,
+        "stand": "L",
+        "p_throws": "R",
+        "description": "foul",
+        "type": "S",
+        "pitch_type": "FF",
+        "zone": 5,
+        "launch_speed": 101.0,
+        "launch_angle": 25.0,
+        "launch_speed_angle": 6,
+        "bb_type": "fly_ball",
+        "estimated_ba_using_speedangle": 0.950,
+        "estimated_slg_using_speedangle": 2.500,
+        "estimated_woba_using_speedangle": 1.100,
+    }
+    frame = pd.concat([frame, pd.DataFrame([foul])], ignore_index=True)
+
+    pitches = prepare_statcast(frame)
+    foul_row = pitches.loc[pitches["at_bat_number"].eq(2)].iloc[0]
+    assert foul_row["is_bbe"] == 0
+    assert foul_row["is_hard_hit"] == 0
+    assert foul_row["is_barrel"] == 0
+    assert foul_row["is_sweet_spot"] == 0
+    assert foul_row["is_fly_ball"] == 0
+
+    batter = aggregate_statcast(pitches)["batters"].iloc[0]
+    assert batter["bbe"] == 1
+    assert batter["hard_hits"] == 1
+    assert batter["barrels"] == 1
+    assert batter["launch_speed_count"] == 1
+    assert batter["max_exit_velocity"] == 100.0
+    assert batter["xba_count"] == 1

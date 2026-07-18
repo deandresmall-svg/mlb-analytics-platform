@@ -139,9 +139,28 @@ try:
             COUNT(*) AS pitches,
             COUNT(DISTINCT batter) AS batters,
             COUNT(DISTINCT pitcher) AS pitchers,
-            SUM(is_bbe) AS batted_balls,
-            SUM(is_hard_hit) AS hard_hits,
-            SUM(is_barrel) AS barrels
+            SUM(
+                CASE
+                    WHEN UPPER(COALESCE(type, '')) = 'X'
+                         AND launch_speed IS NOT NULL
+                    THEN 1 ELSE 0
+                END
+            ) AS batted_balls,
+            SUM(
+                CASE
+                    WHEN UPPER(COALESCE(type, '')) = 'X'
+                         AND launch_speed >= 95.0
+                    THEN 1 ELSE 0
+                END
+            ) AS hard_hits,
+            SUM(
+                CASE
+                    WHEN UPPER(COALESCE(type, '')) = 'X'
+                         AND launch_speed IS NOT NULL
+                         AND launch_speed_angle = 6
+                    THEN 1 ELSE 0
+                END
+            ) AS barrels
         FROM statcast_pitches
         GROUP BY game_date
         ORDER BY game_date DESC
