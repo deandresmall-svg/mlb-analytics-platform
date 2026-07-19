@@ -31,6 +31,10 @@ from mlb_analytics.features.player_features import (
     build_pitcher_prediction_row,
 )
 from mlb_analytics.features.scores import add_batter_scores, add_pitcher_scores
+from mlb_analytics.features.validated_signals import (
+    add_batter_signals,
+    add_pitcher_signals,
+)
 from mlb_analytics.models.base import BinaryTimeModel, CountTimeModel
 
 
@@ -126,7 +130,12 @@ class AnalyticsService:
         while day <= end:
             games = self.sync_schedule(day, day, with_weather=True)
             synced += len(games)
-            if include_boxscores:
+            required_scores = {"away_score", "home_score"}
+            if (
+                include_boxscores
+                and not games.empty
+                and required_scores.issubset(games.columns)
+            ):
                 completed = games.dropna(subset=["away_score", "home_score"])
                 for _, game in completed.iterrows():
                     try:
@@ -248,6 +257,12 @@ class AnalyticsService:
         batting = self.repo.query("SELECT * FROM player_game_batting")
         statcast_batters = self.repo.query("SELECT * FROM statcast_batter_game")
         statcast_pitchers = self.repo.query("SELECT * FROM statcast_pitcher_game")
+        batter_pitch_types = self.repo.query(
+            "SELECT * FROM statcast_batter_pitch_type_game"
+        )
+        pitcher_pitch_types = self.repo.query(
+            "SELECT * FROM statcast_pitcher_pitch_type_game"
+        )
         return (
             build_game_features(games, team, pitching),
             build_batter_training(
@@ -255,8 +270,17 @@ class AnalyticsService:
                 pitching,
                 statcast_batters,
                 statcast_pitchers,
+                batter_pitch_types,
+                pitcher_pitch_types,
             ),
-            build_pitcher_k_training(pitching, statcast_pitchers),
+            build_pitcher_k_training(
+                pitching,
+                statcast_pitchers,
+                games,
+                batting,
+                batter_pitch_types,
+                pitcher_pitch_types,
+            ),
         )
 
     def train_all(self) -> dict:
@@ -305,6 +329,9 @@ class AnalyticsService:
                         "statcast_enabled": any(
                             feature.startswith("sc_") for feature in features
                         ),
+                        "pitch_matchup_enabled": any(
+                            feature.startswith("pt_") for feature in features
+                        ),
                     },
                 )
                 output[name] = asdict(metrics)
@@ -347,6 +374,8 @@ class AnalyticsService:
         pitching: pd.DataFrame | None = None,
         statcast_batters: pd.DataFrame | None = None,
         statcast_pitchers: pd.DataFrame | None = None,
+        batter_pitch_types: pd.DataFrame | None = None,
+        pitcher_pitch_types: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         batting = (
             batting if batting is not None
@@ -364,6 +393,14 @@ class AnalyticsService:
             statcast_pitchers if statcast_pitchers is not None
             else self.repo.query("SELECT * FROM statcast_pitcher_game")
         )
+        batter_pitch_types = (
+            batter_pitch_types if batter_pitch_types is not None
+            else self.repo.query("SELECT * FROM statcast_batter_pitch_type_game")
+        )
+        pitcher_pitch_types = (
+            pitcher_pitch_types if pitcher_pitch_types is not None
+            else self.repo.query("SELECT * FROM statcast_pitcher_pitch_type_game")
+        )
         game_date = pd.Timestamp(game_row["game_date"]).date()
         outputs: list[pd.DataFrame] = []
 
@@ -378,6 +415,8 @@ class AnalyticsService:
                 side,
                 statcast_batters,
                 statcast_pitchers,
+                batter_pitch_types,
+                pitcher_pitch_types,
             )
             if rows.empty:
                 continue
@@ -402,6 +441,7 @@ class AnalyticsService:
 
         output = pd.concat(outputs, ignore_index=True)
         output = add_batter_scores(output)
+        output = add_batter_signals(output)
         for target in ("hit", "home_run"):
             column = f"{target}_probability"
             if column in output.columns:
@@ -415,6 +455,9 @@ class AnalyticsService:
         game_row: pd.Series,
         pitching: pd.DataFrame | None = None,
         statcast_pitchers: pd.DataFrame | None = None,
+        batting: pd.DataFrame | None = None,
+        batter_pitch_types: pd.DataFrame | None = None,
+        pitcher_pitch_types: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         pitching = (
             pitching if pitching is not None
@@ -424,6 +467,18 @@ class AnalyticsService:
             statcast_pitchers if statcast_pitchers is not None
             else self.repo.query("SELECT * FROM statcast_pitcher_game")
         )
+        batting = (
+            batting if batting is not None
+            else self.repo.query("SELECT * FROM player_game_batting")
+        )
+        batter_pitch_types = (
+            batter_pitch_types if batter_pitch_types is not None
+            else self.repo.query("SELECT * FROM statcast_batter_pitch_type_game")
+        )
+        pitcher_pitch_types = (
+            pitcher_pitch_types if pitcher_pitch_types is not None
+            else self.repo.query("SELECT * FROM statcast_pitcher_pitch_type_game")
+        )
         path = self.s.model_dir / "strikeouts.joblib"
         if not path.exists():
             return pd.DataFrame()
@@ -432,16 +487,20 @@ class AnalyticsService:
         game_date = pd.Timestamp(game_row["game_date"]).date()
 
         for side in ("away", "home"):
+            opponent_side = "home" if side == "away" else "away"
             frame = build_pitcher_prediction_row(
                 pitching,
                 game_row.get(f"{side}_probable_pitcher_id"),
                 game_date,
                 statcast_pitchers,
+                batting,
+                game_row.get(f"{opponent_side}_team_id"),
+                batter_pitch_types,
+                pitcher_pitch_types,
             )
             if frame.empty:
                 continue
             frame["team"] = game_row[f"{side}_team"]
-            opponent_side = "home" if side == "away" else "away"
             frame["opponent"] = game_row[f"{opponent_side}_team"]
             frame["projected_strikeouts"] = model.predict_frame(
                 frame, K_FEATURES
@@ -450,7 +509,8 @@ class AnalyticsService:
 
         if not rows:
             return pd.DataFrame()
-        return add_pitcher_scores(pd.concat(rows, ignore_index=True))
+        output = add_pitcher_scores(pd.concat(rows, ignore_index=True))
+        return add_pitcher_signals(output)
 
     def odds_for_slate(self, slate_date: date) -> dict:
         if not self.s.odds_api_key:
@@ -547,6 +607,12 @@ class AnalyticsService:
         pitching = self.repo.query("SELECT * FROM pitcher_game_stats")
         statcast_batters = self.repo.query("SELECT * FROM statcast_batter_game")
         statcast_pitchers = self.repo.query("SELECT * FROM statcast_pitcher_game")
+        batter_pitch_types = self.repo.query(
+            "SELECT * FROM statcast_batter_pitch_type_game"
+        )
+        pitcher_pitch_types = self.repo.query(
+            "SELECT * FROM statcast_pitcher_pitch_type_game"
+        )
 
         batter_frames: list[pd.DataFrame] = []
         pitcher_frames: list[pd.DataFrame] = []
@@ -558,6 +624,8 @@ class AnalyticsService:
                     pitching,
                     statcast_batters,
                     statcast_pitchers,
+                    batter_pitch_types,
+                    pitcher_pitch_types,
                 )
                 if not batters.empty:
                     batters = batters.copy()
@@ -574,6 +642,9 @@ class AnalyticsService:
                     game,
                     pitching,
                     statcast_pitchers,
+                    batting,
+                    batter_pitch_types,
+                    pitcher_pitch_types,
                 )
                 if not pitchers.empty:
                     pitchers = pitchers.copy()

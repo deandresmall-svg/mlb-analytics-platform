@@ -12,6 +12,15 @@ from mlb_analytics.features.statcast_features import (
     pitcher_statcast_features,
     index_statcast_games,
 )
+from mlb_analytics.features.pitch_matchups import (
+    BATTER_HIT_PITCH_MATCHUP_FEATURES,
+    BATTER_HR_PITCH_MATCHUP_FEATURES,
+    PITCHER_K_LINEUP_MATCHUP_FEATURES,
+    batter_vs_pitch_mix_features,
+    index_batting_teams,
+    index_pitch_type_games,
+    pitcher_vs_lineup_pitch_mix_features,
+)
 
 
 HIT_FEATURES = [
@@ -147,9 +156,9 @@ K_FEATURES = [
     "pitcher_games_prior",
 ]
 
-HIT_FEATURES += BATTER_HIT_STATCAST_FEATURES
-HR_FEATURES += BATTER_HR_STATCAST_FEATURES
-K_FEATURES += PITCHER_K_STATCAST_FEATURES
+HIT_FEATURES += BATTER_HIT_STATCAST_FEATURES + BATTER_HIT_PITCH_MATCHUP_FEATURES
+HR_FEATURES += BATTER_HR_STATCAST_FEATURES + BATTER_HR_PITCH_MATCHUP_FEATURES
+K_FEATURES += PITCHER_K_STATCAST_FEATURES + PITCHER_K_LINEUP_MATCHUP_FEATURES
 
 
 def _numeric(series: pd.Series) -> pd.Series:
@@ -473,6 +482,8 @@ def build_batter_training(
     pitching: pd.DataFrame | None = None,
     batter_statcast: pd.DataFrame | None = None,
     pitcher_statcast: pd.DataFrame | None = None,
+    batter_pitch_types: pd.DataFrame | None = None,
+    pitcher_pitch_types: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     rows: list[dict] = []
     pitching = pitching.copy() if pitching is not None else pd.DataFrame()
@@ -482,9 +493,17 @@ def build_batter_training(
     pitcher_statcast = (
         pitcher_statcast.copy() if pitcher_statcast is not None else pd.DataFrame()
     )
+    batter_pitch_types = (
+        batter_pitch_types.copy() if batter_pitch_types is not None else pd.DataFrame()
+    )
+    pitcher_pitch_types = (
+        pitcher_pitch_types.copy() if pitcher_pitch_types is not None else pd.DataFrame()
+    )
     pitching_index = _index_player_games(pitching)
     batter_statcast_index = index_statcast_games(batter_statcast)
     pitcher_statcast_index = index_statcast_games(pitcher_statcast)
+    batter_pitch_type_index = index_pitch_type_games(batter_pitch_types)
+    pitcher_pitch_type_index = index_pitch_type_games(pitcher_pitch_types)
 
     if batting.empty:
         return pd.DataFrame(
@@ -552,6 +571,13 @@ def build_batter_training(
                         opponent_pitcher_id,
                         current_game["game_date"],
                     ),
+                    **batter_vs_pitch_mix_features(
+                        batter_pitch_type_index,
+                        pitcher_pitch_type_index,
+                        player_id,
+                        opponent_pitcher_id,
+                        current_game["game_date"],
+                    ),
                 }
             )
 
@@ -581,6 +607,8 @@ def build_batter_prediction_rows(
     side: str,
     batter_statcast: pd.DataFrame | None = None,
     pitcher_statcast: pd.DataFrame | None = None,
+    batter_pitch_types: pd.DataFrame | None = None,
+    pitcher_pitch_types: pd.DataFrame | None = None,
     max_players: int = 9,
 ) -> pd.DataFrame:
     """Build point-in-time feature rows for likely active hitters.
@@ -598,9 +626,17 @@ def build_batter_prediction_rows(
     pitcher_statcast = (
         pitcher_statcast.copy() if pitcher_statcast is not None else pd.DataFrame()
     )
+    batter_pitch_types = (
+        batter_pitch_types.copy() if batter_pitch_types is not None else pd.DataFrame()
+    )
+    pitcher_pitch_types = (
+        pitcher_pitch_types.copy() if pitcher_pitch_types is not None else pd.DataFrame()
+    )
     pitching_index = _index_player_games(pitching)
     batter_statcast_index = index_statcast_games(batter_statcast)
     pitcher_statcast_index = index_statcast_games(pitcher_statcast)
+    batter_pitch_type_index = index_pitch_type_games(batter_pitch_types)
+    pitcher_pitch_type_index = index_pitch_type_games(pitcher_pitch_types)
     data = batting.copy()
     data["game_date"] = pd.to_datetime(data["game_date"], errors="coerce")
     cutoff = pd.Timestamp(game_date)
@@ -668,6 +704,13 @@ def build_batter_prediction_rows(
                 **opponent_pitcher_statcast_features(
                     pitcher_statcast_index, opponent_pitcher_id, cutoff
                 ),
+                **batter_vs_pitch_mix_features(
+                    batter_pitch_type_index,
+                    pitcher_pitch_type_index,
+                    candidate["player_id"],
+                    opponent_pitcher_id,
+                    cutoff,
+                ),
             }
         )
 
@@ -688,6 +731,10 @@ def build_pitcher_prediction_row(
     pitcher_id,
     game_date,
     pitcher_statcast: pd.DataFrame | None = None,
+    batting: pd.DataFrame | None = None,
+    opponent_team_id=None,
+    batter_pitch_types: pd.DataFrame | None = None,
+    pitcher_pitch_types: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Build a point-in-time strikeout feature row for a probable starter."""
     if pitching.empty or pd.isna(pitcher_id):
@@ -710,6 +757,12 @@ def build_pitcher_prediction_row(
     pitcher_statcast_index = index_statcast_games(
         pitcher_statcast if pitcher_statcast is not None else pd.DataFrame()
     )
+    batter_pitch_type_index = index_pitch_type_games(
+        batter_pitch_types if batter_pitch_types is not None else pd.DataFrame()
+    )
+    pitcher_pitch_type_index = index_pitch_type_games(
+        pitcher_pitch_types if pitcher_pitch_types is not None else pd.DataFrame()
+    )
     row = {
         "player_id": int(float(pitcher_id)),
         "player_name": names.iloc[-1] if not names.empty else str(pitcher_id),
@@ -718,6 +771,16 @@ def build_pitcher_prediction_row(
         **pitcher_statcast_features(
             pitcher_statcast_index,
             pitcher_id,
+            game_date,
+        ),
+        **pitcher_vs_lineup_pitch_mix_features(
+            batter_pitch_type_index,
+            pitcher_pitch_type_index,
+            index_batting_teams(
+                batting if batting is not None else pd.DataFrame()
+            ),
+            pitcher_id,
+            opponent_team_id,
             game_date,
         ),
     }
@@ -802,12 +865,30 @@ def _pitcher_features(prior: pd.DataFrame) -> dict[str, float]:
 def build_pitcher_k_training(
     pitching: pd.DataFrame,
     pitcher_statcast: pd.DataFrame | None = None,
+    games: pd.DataFrame | None = None,
+    batting: pd.DataFrame | None = None,
+    batter_pitch_types: pd.DataFrame | None = None,
+    pitcher_pitch_types: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     rows: list[dict] = []
     pitcher_statcast = (
         pitcher_statcast.copy() if pitcher_statcast is not None else pd.DataFrame()
     )
     pitcher_statcast_index = index_statcast_games(pitcher_statcast)
+    batter_pitch_type_index = index_pitch_type_games(
+        batter_pitch_types if batter_pitch_types is not None else pd.DataFrame()
+    )
+    pitcher_pitch_type_index = index_pitch_type_games(
+        pitcher_pitch_types if pitcher_pitch_types is not None else pd.DataFrame()
+    )
+    games = games.copy() if games is not None else pd.DataFrame()
+    batting = batting.copy() if batting is not None else pd.DataFrame()
+    batting_team_index = index_batting_teams(batting)
+    games_by_pk = (
+        games.set_index("game_pk", drop=False)
+        if not games.empty and "game_pk" in games.columns
+        else pd.DataFrame()
+    )
 
     if pitching.empty:
         return pd.DataFrame(
@@ -845,6 +926,17 @@ def build_pitcher_k_training(
                 errors="coerce",
             ).fillna(0).iloc[0]
 
+            opponent_team_id = None
+            game_pk = current_game.get("game_pk")
+            if not games_by_pk.empty and game_pk in games_by_pk.index:
+                game_row = games_by_pk.loc[game_pk]
+                if isinstance(game_row, pd.DataFrame):
+                    game_row = game_row.iloc[0]
+                side = str(current_game.get("side", "")).lower()
+                opponent_team_id = game_row.get(
+                    "home_team_id" if side == "away" else "away_team_id"
+                )
+
             rows.append(
                 {
                     "game_pk": current_game["game_pk"],
@@ -855,6 +947,14 @@ def build_pitcher_k_training(
                     **pitcher_statcast_features(
                         pitcher_statcast_index,
                         player_id,
+                        current_game["game_date"],
+                    ),
+                    **pitcher_vs_lineup_pitch_mix_features(
+                        batter_pitch_type_index,
+                        pitcher_pitch_type_index,
+                        batting_team_index,
+                        player_id,
+                        opponent_team_id,
                         current_game["game_date"],
                     ),
                 }

@@ -26,6 +26,9 @@ class Settings:
     api_max_retries: int = int(os.getenv("API_MAX_RETRIES", "3"))
     calibration_method: str = os.getenv("CALIBRATION_METHOD", "sigmoid")
     model_dir: Path = Path(os.getenv("MODEL_DIR", "models"))
+    reliability_snapshot_path: Path = Path(
+        os.getenv("RELIABILITY_SNAPSHOT_PATH", "data/reliability_snapshot.json")
+    )
     min_training_games: int = int(os.getenv("MIN_TRAINING_GAMES", "300"))
     default_backfill_days: int = int(os.getenv("DEFAULT_BACKFILL_DAYS", "365"))
 
@@ -51,6 +54,7 @@ class Settings:
     def ensure_directories(self) -> None:
         Path("data").mkdir(exist_ok=True)
         self.model_dir.mkdir(parents=True, exist_ok=True)
+        self.reliability_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

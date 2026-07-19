@@ -84,6 +84,14 @@ def hit_score(row: pd.Series) -> dict[str, object]:
             (_scale(_number(row, "opponent_sp_whip_5", 1.30), 0.95, 1.65), 0.15),
         ]
     )
+    pitch_type_matchup = _weighted(
+        [
+            (_scale(_number(row, "pt_matchup_xba", 0.245), 0.190, 0.330), 0.35),
+            (_scale(_number(row, "pt_matchup_contact_rate", 0.755), 0.64, 0.86), 0.25),
+            (_scale(_number(row, "pt_matchup_xwoba", 0.320), 0.250, 0.410), 0.20),
+            (_scale(_number(row, "pt_matchup_hard_hit_rate", 0.38), 0.25, 0.55), 0.20),
+        ]
+    )
     overall = _weighted(
         [(recent, 0.30), (opportunity, 0.20), (contact_quality, 0.30), (matchup, 0.20)]
     )
@@ -99,6 +107,8 @@ def hit_score(row: pd.Series) -> dict[str, object]:
         "hit_score_opportunity": round(opportunity, 1),
         "hit_score_contact": round(contact_quality, 1),
         "hit_score_matchup": round(matchup, 1),
+        "hit_pitch_type_score": round(pitch_type_matchup, 1),
+        "hit_pitch_type_grade": score_label(pitch_type_matchup),
     }
 
 
@@ -133,6 +143,15 @@ def home_run_score(row: pd.Series) -> dict[str, object]:
             (_scale(_number(row, "batting_order", 5.0), 1.0, 9.0, invert=True), 0.40),
         ]
     )
+    pitch_type_matchup = _weighted(
+        [
+            (_scale(_number(row, "pt_matchup_xslg", 0.410), 0.280, 0.620), 0.30),
+            (_scale(_number(row, "pt_matchup_barrel_rate", 0.070), 0.02, 0.15), 0.25),
+            (_scale(_number(row, "pt_matchup_hard_hit_rate", 0.38), 0.25, 0.55), 0.20),
+            (_scale(_number(row, "pt_matchup_fly_ball_rate", 0.24), 0.12, 0.38), 0.15),
+            (_scale(_number(row, "pt_matchup_whiff_rate", 0.245), 0.15, 0.36, invert=True), 0.10),
+        ]
+    )
     overall = _weighted(
         [(production, 0.25), (contact_quality, 0.40), (matchup, 0.25), (opportunity, 0.10)]
     )
@@ -148,6 +167,8 @@ def home_run_score(row: pd.Series) -> dict[str, object]:
         "home_run_score_contact": round(contact_quality, 1),
         "home_run_score_matchup": round(matchup, 1),
         "home_run_score_opportunity": round(opportunity, 1),
+        "home_run_pitch_type_score": round(pitch_type_matchup, 1),
+        "home_run_pitch_type_grade": score_label(pitch_type_matchup),
     }
 
 
@@ -178,6 +199,14 @@ def pitcher_k_score(row: pd.Series) -> dict[str, object]:
             (_scale(_number(row, "sc_pitcher_zone_rate_10", 0.49), 0.38, 0.58), 0.40),
         ]
     )
+    lineup_matchup = _weighted(
+        [
+            (_scale(_number(row, "pt_lineup_whiff_rate", 0.245), 0.16, 0.36), 0.45),
+            (_scale(_number(row, "pt_lineup_chase_rate", 0.285), 0.20, 0.39), 0.25),
+            (_scale(_number(row, "pt_lineup_contact_rate", 0.755), 0.64, 0.86, invert=True), 0.20),
+            (_scale(_number(row, "pt_lineup_xwoba", 0.320), 0.250, 0.400, invert=True), 0.10),
+        ]
+    )
     overall = _weighted(
         [(strikeout_skill, 0.35), (swing_miss, 0.35), (workload, 0.20), (command, 0.10)]
     )
@@ -193,6 +222,8 @@ def pitcher_k_score(row: pd.Series) -> dict[str, object]:
         "pitcher_k_score_swing_miss": round(swing_miss, 1),
         "pitcher_k_score_workload": round(workload, 1),
         "pitcher_k_score_command": round(command, 1),
+        "pitcher_k_lineup_matchup_score": round(lineup_matchup, 1),
+        "pitcher_k_lineup_matchup_grade": score_label(lineup_matchup),
     }
 
 

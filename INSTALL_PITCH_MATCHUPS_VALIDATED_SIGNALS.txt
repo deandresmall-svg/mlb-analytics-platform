@@ -1,0 +1,47 @@
+MLB Pitch-Mix Matchups + Validated Dashboard Signals
+====================================================
+
+This update adds a point-in-time pitcher-arsenal matchup layer without changing
+or replacing the already validated Hit Score, Home Run Score, or K Score weights.
+
+Included:
+- Opposing pitcher pitch mix and primary-pitch usage.
+- Batter performance versus each pitch type, shrunk toward league averages when
+  samples are small.
+- Pitcher results allowed by pitch type and batter handedness when enough data exists.
+- Weighted pitch-mix xBA, xSLG, xwOBA, whiff, chase, hard-hit, barrel, and fly-ball metrics.
+- Projected-lineup pitch-mix whiff/contact/chase features for pitcher strikeouts.
+- New numeric training features for Hits, Home Runs, and Strikeouts.
+- Separate pitch-type matchup scores. These are NOT blended into the validated
+  0-100 scores until the next chronological holdout confirms they help.
+- Calibrated-probability labels, validated signal labels, and small-sample warnings.
+- Training results now warn when one or more models fail instead of always showing success.
+- The no-game-date backfill guard is preserved.
+
+Install from the repository root:
+
+    unzip -o mlb-pitch-matchups-validated-signals.zip
+
+Restart Streamlit:
+
+    source .venv/bin/activate
+    pkill -f streamlit || true
+    python -m streamlit run app/Home.py --server.port 8502 --server.address 0.0.0.0
+
+You do NOT need to redownload Statcast or rebuild aggregates. This update reads the
+existing statcast_batter_pitch_type_game and statcast_pitcher_pitch_type_game tables.
+
+Next steps:
+1. Confirm Home and Best Bets load with the existing saved models.
+2. Run Train all models once. Training may take longer because pitch-mix features
+   are generated chronologically to avoid future-data leakage.
+3. Record the new Hit/HR ROC AUC and Strikeout MAE.
+4. Run Calibration & Score Reliability again.
+5. Do not use the new pitch-type score as a standalone betting filter until its
+   new holdout buckets are reviewed.
+
+Safe checkpoint after verification:
+
+    git add .
+    git commit -m "Add pitch mix matchup features and validated signals"
+    git push

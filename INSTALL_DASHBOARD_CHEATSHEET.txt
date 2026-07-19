@@ -1,0 +1,42 @@
+MLB DASHBOARD + AUTO-UPDATING CHEAT SHEET
+==========================================
+
+This update does not replace the database, trained model files, Statcast tables,
+or Odds API configuration.
+
+Install from the project root:
+
+  cd /workspaces/mlb-moneyline-model-
+  unzip -o mlb-dashboard-cheatsheet-update.zip
+
+Restart Streamlit:
+
+  source .venv/bin/activate
+  pkill -f streamlit || true
+  python -m streamlit run app/Home.py --server.port 8502 --server.address 0.0.0.0
+
+After installation:
+
+1. Open Calibration.
+2. Click "Run holdout reliability evaluation" once.
+3. The evaluation writes data/reliability_snapshot.json.
+4. Open the new Cheat Sheet page, Home tabs, or Best Bets.
+
+The cheat sheet updates after every completed reliability evaluation. If models
+are retrained afterward, the dashboard marks the saved cheat sheet as stale until
+Calibration is run again.
+
+Added:
+- Dedicated Cheat Sheet page for Hits, Home Runs, and Pitchers
+- Compact cheat sheets inside the Home Hits/HR/Pitchers tabs
+- Compact cheat sheet and dynamic filter defaults in Best Bets
+- Probability and score-bucket tables sourced from the latest holdout
+- Dynamically selected supported probability + score rules
+- K Score tier guidance with observed 5+/6+/7+ rates
+- Sample-size evidence and stale-model warnings
+- Score-data confidence and batting-order filters in Best Bets
+- Validated signal thresholds that follow the latest reliability snapshot
+
+Validation performed:
+- Python compilation passed
+- Automated tests: 22 passed

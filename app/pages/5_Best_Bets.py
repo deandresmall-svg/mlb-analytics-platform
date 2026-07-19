@@ -9,7 +9,26 @@ import streamlit as st
 
 from mlb_analytics.config import settings
 from mlb_analytics.data.odds_api import normalize_name, paired_no_vig_probability
+from mlb_analytics.evaluation.cheatsheet import (
+    load_reliability_snapshot,
+    recommended_filters,
+)
 from mlb_analytics.services.pipeline import AnalyticsService
+from mlb_analytics.ui.cheatsheet import render_cheat_sheet
+
+
+CONFIDENCE_RANK = {"Low": 0, "Medium": 1, "High": 2}
+
+
+def confidence_filter_mask(
+    frame: pd.DataFrame,
+    column: str,
+    minimum: str,
+) -> pd.Series:
+    if minimum == "Any" or column not in frame.columns:
+        return pd.Series(True, index=frame.index)
+    required = CONFIDENCE_RANK.get(minimum, 0)
+    return frame[column].map(lambda value: CONFIDENCE_RANK.get(str(value), -1)) >= required
 
 
 def pct(value: object) -> str:
@@ -98,7 +117,11 @@ def hit_reasons(row: pd.Series) -> str:
         reasons.append("strong Statcast xBA")
     elif row.get("hit_rate_10", 0) >= 0.7:
         reasons.append("70%+ recent hit rate")
-    if row.get("sc_opp_xba_allowed_10", 0) >= 0.265:
+    if row.get("pt_matchup_xba", 0) >= 0.270:
+        reasons.append(
+            f"good fit vs {row.get('pt_primary_pitch', 'pitch mix')}"
+        )
+    elif row.get("sc_opp_xba_allowed_10", 0) >= 0.265:
         reasons.append("starter allows quality contact")
     return ", ".join(reasons[:3]) or "model and score feature blend"
 
@@ -111,7 +134,11 @@ def hr_reasons(row: pd.Series) -> str:
         reasons.append("45%+ hard-hit rate")
     if row.get("iso_30", 0) >= 0.2:
         reasons.append("strong 30-game ISO")
-    if row.get("sc_opp_barrel_rate_allowed_10", 0) >= 0.09:
+    if row.get("pt_matchup_xslg", 0) >= 0.470:
+        reasons.append(
+            f"power fit vs {row.get('pt_primary_pitch', 'pitch mix')}"
+        )
+    elif row.get("sc_opp_barrel_rate_allowed_10", 0) >= 0.09:
         reasons.append("starter allows barrels")
     elif row.get("opponent_sp_hr_per_9_5", 0) >= 1.3:
         reasons.append("starter allows power")
@@ -126,11 +153,27 @@ def fetch_slate_odds(slate_date: date) -> dict:
 st.set_page_config(page_title="Today's Best Bets", page_icon="⭐", layout="wide")
 st.title("⭐ Today's Model + Market Board")
 st.caption(
-    "Model probability, the 0–100 dashboard score, and market edge are separate "
-    "signals. Odds are cached for five minutes; always confirm a line before betting."
+    "Displayed model probabilities are calibrated. The validated 0–100 score, "
+    "new pitch-type matchup score, and market edge remain separate signals. Odds "
+    "are cached for five minutes; always confirm a line before betting."
 )
 
 service = AnalyticsService(settings)
+reliability_snapshot = load_reliability_snapshot(
+    settings.reliability_snapshot_path
+)
+cheat_filters = recommended_filters(reliability_snapshot)
+
+with st.expander(
+    "📘 Live model cheat sheet — auto-updates from Calibration",
+    expanded=False,
+):
+    render_cheat_sheet(
+        reliability_snapshot,
+        settings.model_dir,
+        compact=True,
+    )
+
 slate_date = st.date_input("Slate date", date.today())
 
 controls = st.columns([1, 1, 1, 2])
@@ -198,18 +241,54 @@ hit_tab, hr_tab, k_tab = st.tabs(
 )
 
 with hit_tab:
-    filter_cols = st.columns(2)
+    filter_cols = st.columns(4)
     with filter_cols[0]:
+        hit_default_probability = float(
+            cheat_filters["hits"].get("probability_at_least", 0.65)
+        )
+        hit_default_probability = min(0.85, max(0.40, hit_default_probability))
         minimum_probability = st.slider(
-            "Minimum hit probability", 0.40, 0.85, 0.55, 0.01
+            "Minimum calibrated hit probability",
+            0.40,
+            0.85,
+            hit_default_probability,
+            0.01,
         )
     with filter_cols[1]:
-        minimum_score = st.slider("Minimum Hit Score", 0, 100, 50, 1)
+        hit_default_score = int(
+            cheat_filters["hits"].get("score_at_least", 55)
+        )
+        minimum_score = st.slider(
+            "Minimum Hit Score", 0, 100, hit_default_score, 1
+        )
+    with filter_cols[2]:
+        minimum_data_confidence = st.selectbox(
+            "Minimum score data",
+            ["Any", "Medium", "High"],
+            key="hit_score_data_filter",
+        )
+    with filter_cols[3]:
+        top_six_only = st.checkbox(
+            "Projected order 1–6 only",
+            value=True,
+            key="hit_top_six_filter",
+        )
 
-    hit = batters[
-        (pd.to_numeric(batters.get("hit_probability"), errors="coerce") >= minimum_probability)
-        & (pd.to_numeric(batters.get("hit_score"), errors="coerce") >= minimum_score)
-    ].copy()
+    hit_mask = (
+        pd.to_numeric(batters.get("hit_probability"), errors="coerce")
+        >= minimum_probability
+    ) & (
+        pd.to_numeric(batters.get("hit_score"), errors="coerce")
+        >= minimum_score
+    )
+    hit_mask &= confidence_filter_mask(
+        batters, "hit_score_confidence", minimum_data_confidence
+    )
+    if top_six_only and "batting_order" in batters.columns:
+        hit_mask &= pd.to_numeric(
+            batters["batting_order"], errors="coerce"
+        ).between(1, 6, inclusive="both")
+    hit = batters.loc[hit_mask].copy()
     rows: list[dict] = []
     for _, row in hit.iterrows():
         quote = best_player_price(
@@ -230,9 +309,16 @@ with hit_tab:
                 "Player": row["player_name"],
                 "Team": row["team"],
                 "Matchup": row["matchup"],
-                "Model probability": model_probability,
+                "Calibrated probability": model_probability,
+                "Validated signal": row.get("hit_signal"),
                 "Hit Score": row.get("hit_score"),
                 "Score grade": row.get("hit_score_label"),
+                "Score evidence": row.get("hit_score_sample_note"),
+                "Pitch-type score": row.get("hit_pitch_type_score"),
+                "Primary pitch": row.get("pt_primary_pitch"),
+                "Primary usage": row.get("pt_primary_pitch_usage"),
+                "Pitch-mix xBA": row.get("pt_matchup_xba"),
+                "Pitch-mix coverage": row.get("pt_pitch_mix_coverage"),
                 "Score data": row.get("hit_score_confidence"),
                 "Model fair odds": fair_american(model_probability),
                 "Best price": f"{price:+.0f}" if price is not None else "N/A",
@@ -259,12 +345,14 @@ with hit_tab:
         st.info("No hitters meet both selected filters.")
     else:
         table = table.sort_values(
-            ["EV per $1", "Hit Score", "Model probability"],
+            ["EV per $1", "Hit Score", "Calibrated probability"],
             ascending=False,
             na_position="last",
         )
         for column in [
-            "Model probability",
+            "Calibrated probability",
+            "Primary usage",
+            "Pitch-mix coverage",
             "Raw implied",
             "No-vig market",
             "Model edge",
@@ -273,24 +361,64 @@ with hit_tab:
         table["EV per $1"] = pd.to_numeric(
             table["EV per $1"], errors="coerce"
         ).map(lambda value: f"{value:+.1%}" if pd.notna(value) else "N/A")
-        table["Hit Score"] = pd.to_numeric(
-            table["Hit Score"], errors="coerce"
-        ).round(1)
+        for column in ["Hit Score", "Pitch-type score"]:
+            table[column] = pd.to_numeric(
+                table[column], errors="coerce"
+            ).round(1)
+        table["Pitch-mix xBA"] = pd.to_numeric(
+            table["Pitch-mix xBA"], errors="coerce"
+        ).round(3)
         st.dataframe(table.head(40), width="stretch", hide_index=True)
 
 with hr_tab:
-    filter_cols = st.columns(2)
+    filter_cols = st.columns(4)
     with filter_cols[0]:
+        hr_default_probability = float(
+            cheat_filters["home_runs"].get("probability_at_least", 0.15)
+        )
+        hr_default_probability = min(0.40, max(0.03, hr_default_probability))
         minimum_probability = st.slider(
-            "Minimum HR probability", 0.03, 0.40, 0.08, 0.01
+            "Minimum calibrated HR probability",
+            0.03,
+            0.40,
+            hr_default_probability,
+            0.01,
         )
     with filter_cols[1]:
-        minimum_score = st.slider("Minimum HR Score", 0, 100, 50, 1)
+        hr_default_score = int(
+            cheat_filters["home_runs"].get("score_at_least", 70)
+        )
+        minimum_score = st.slider(
+            "Minimum HR Score", 0, 100, hr_default_score, 1
+        )
+    with filter_cols[2]:
+        minimum_data_confidence = st.selectbox(
+            "Minimum score data",
+            ["Any", "Medium", "High"],
+            key="hr_score_data_filter",
+        )
+    with filter_cols[3]:
+        top_six_only = st.checkbox(
+            "Projected order 1–6 only",
+            value=True,
+            key="hr_top_six_filter",
+        )
 
-    home_runs = batters[
-        (pd.to_numeric(batters.get("home_run_probability"), errors="coerce") >= minimum_probability)
-        & (pd.to_numeric(batters.get("home_run_score"), errors="coerce") >= minimum_score)
-    ].copy()
+    hr_mask = (
+        pd.to_numeric(batters.get("home_run_probability"), errors="coerce")
+        >= minimum_probability
+    ) & (
+        pd.to_numeric(batters.get("home_run_score"), errors="coerce")
+        >= minimum_score
+    )
+    hr_mask &= confidence_filter_mask(
+        batters, "home_run_score_confidence", minimum_data_confidence
+    )
+    if top_six_only and "batting_order" in batters.columns:
+        hr_mask &= pd.to_numeric(
+            batters["batting_order"], errors="coerce"
+        ).between(1, 6, inclusive="both")
+    home_runs = batters.loc[hr_mask].copy()
     rows = []
     for _, row in home_runs.iterrows():
         quote = best_player_price(
@@ -311,9 +439,17 @@ with hr_tab:
                 "Player": row["player_name"],
                 "Team": row["team"],
                 "Matchup": row["matchup"],
-                "Model probability": model_probability,
+                "Calibrated probability": model_probability,
+                "Validated signal": row.get("home_run_signal"),
                 "HR Score": row.get("home_run_score"),
                 "Score grade": row.get("home_run_score_label"),
+                "Score evidence": row.get("home_run_score_sample_note"),
+                "Pitch-type score": row.get("home_run_pitch_type_score"),
+                "Primary pitch": row.get("pt_primary_pitch"),
+                "Primary usage": row.get("pt_primary_pitch_usage"),
+                "Pitch-mix xSLG": row.get("pt_matchup_xslg"),
+                "Pitch-mix barrel rate": row.get("pt_matchup_barrel_rate"),
+                "Pitch-mix coverage": row.get("pt_pitch_mix_coverage"),
                 "Score data": row.get("home_run_score_confidence"),
                 "Model fair odds": fair_american(model_probability),
                 "Best price": f"{price:+.0f}" if price is not None else "N/A",
@@ -340,12 +476,15 @@ with hr_tab:
         st.info("No hitters meet both selected filters.")
     else:
         table = table.sort_values(
-            ["EV per $1", "HR Score", "Model probability"],
+            ["EV per $1", "HR Score", "Calibrated probability"],
             ascending=False,
             na_position="last",
         )
         for column in [
-            "Model probability",
+            "Calibrated probability",
+            "Primary usage",
+            "Pitch-mix barrel rate",
+            "Pitch-mix coverage",
             "Raw implied",
             "No-vig market",
             "Model edge",
@@ -354,17 +493,38 @@ with hr_tab:
         table["EV per $1"] = pd.to_numeric(
             table["EV per $1"], errors="coerce"
         ).map(lambda value: f"{value:+.1%}" if pd.notna(value) else "N/A")
-        table["HR Score"] = pd.to_numeric(
-            table["HR Score"], errors="coerce"
-        ).round(1)
+        for column in ["HR Score", "Pitch-type score"]:
+            table[column] = pd.to_numeric(
+                table[column], errors="coerce"
+            ).round(1)
+        table["Pitch-mix xSLG"] = pd.to_numeric(
+            table["Pitch-mix xSLG"], errors="coerce"
+        ).round(3)
         st.dataframe(table.head(40), width="stretch", hide_index=True)
 
 with k_tab:
-    minimum_score = st.slider("Minimum Pitcher K Score", 0, 100, 45, 1)
-    pitcher_pool = pitchers[
+    filter_cols = st.columns(2)
+    with filter_cols[0]:
+        k_default_score = int(
+            cheat_filters["strikeouts"].get("score_at_least", 55)
+        )
+        minimum_score = st.slider(
+            "Minimum Pitcher K Score", 0, 100, k_default_score, 1
+        )
+    with filter_cols[1]:
+        minimum_data_confidence = st.selectbox(
+            "Minimum score data",
+            ["Any", "Medium", "High"],
+            key="k_score_data_filter",
+        )
+    pitcher_mask = (
         pd.to_numeric(pitchers.get("pitcher_k_score"), errors="coerce")
         >= minimum_score
-    ].copy()
+    )
+    pitcher_mask &= confidence_filter_mask(
+        pitchers, "pitcher_k_score_confidence", minimum_data_confidence
+    )
+    pitcher_pool = pitchers.loc[pitcher_mask].copy()
     rows = []
     for _, row in pitcher_pool.iterrows():
         player_quotes = matched_quotes(
@@ -398,7 +558,15 @@ with k_tab:
                 "Matchup": row["matchup"],
                 "Projected K": round(float(row["projected_strikeouts"]), 2),
                 "K Score": row.get("pitcher_k_score"),
+                "K environment": row.get("pitcher_k_signal"),
                 "Score grade": row.get("pitcher_k_score_label"),
+                "Score evidence": row.get("pitcher_k_score_sample_note"),
+                "Lineup pitch score": row.get("pitcher_k_lineup_matchup_score"),
+                "Lineup pitch grade": row.get("pitcher_k_lineup_matchup_grade"),
+                "Primary pitch": row.get("pt_primary_pitch"),
+                "Primary usage": row.get("pt_primary_pitch_usage"),
+                "Projected-lineup whiff": row.get("pt_lineup_whiff_rate"),
+                "Pitch-mix coverage": row.get("pt_lineup_coverage"),
                 "Score data": row.get("pitcher_k_score_confidence"),
                 "Best over line": best["point"] if best is not None else None,
                 "Best price": (
@@ -426,18 +594,28 @@ with k_tab:
             ascending=False,
             na_position="last",
         )
-        for column in ["Model over probability", "No-vig market", "Model edge"]:
+        for column in [
+            "Model over probability",
+            "No-vig market",
+            "Model edge",
+            "Primary usage",
+            "Projected-lineup whiff",
+            "Pitch-mix coverage",
+        ]:
             table[column] = table[column].map(pct)
         table["EV per $1"] = pd.to_numeric(
             table["EV per $1"], errors="coerce"
         ).map(lambda value: f"{value:+.1%}" if pd.notna(value) else "N/A")
-        table["K Score"] = pd.to_numeric(
-            table["K Score"], errors="coerce"
-        ).round(1)
+        for column in ["K Score", "Lineup pitch score"]:
+            table[column] = pd.to_numeric(
+                table[column], errors="coerce"
+            ).round(1)
         st.dataframe(table.head(40), width="stretch", hide_index=True)
 
 st.caption(
     "Raw implied probability includes sportsbook vig. No-vig market probability "
     "uses the Over and Under prices from the same sportsbook at the same line. "
-    "Dashboard scores are quality grades, not probabilities."
+    "Dashboard scores are quality grades, not probabilities. Pitch-type scores "
+    "are new and should be checked on the next chronological holdout before being "
+    "used as standalone filters."
 )

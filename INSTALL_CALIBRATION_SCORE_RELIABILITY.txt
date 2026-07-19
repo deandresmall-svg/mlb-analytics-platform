@@ -1,0 +1,25 @@
+MLB CALIBRATION + SCORE RELIABILITY UPDATE
+
+Files included:
+- app/pages/4_Calibration.py
+- src/mlb_analytics/evaluation/__init__.py
+- src/mlb_analytics/evaluation/reliability.py
+- tests/test_reliability.py
+
+Install from the project root:
+  unzip -o mlb-calibration-score-reliability.zip
+
+Restart Streamlit:
+  source .venv/bin/activate
+  pkill -f streamlit
+  python -m streamlit run app/Home.py --server.port 8502
+
+Use:
+1. Train all models from Home.
+2. Open Calibration & Score Reliability.
+3. Click Run holdout reliability evaluation.
+4. Review probability buckets, score buckets, sample counts, calibration gaps,
+   and combined probability + score rule checks.
+
+This update does not alter the database, trained models, feature engineering,
+score weights, Odds API integration, or Statcast pipeline.

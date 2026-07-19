@@ -7,8 +7,10 @@ import pandas as pd
 import streamlit as st
 
 from mlb_analytics.config import settings
+from mlb_analytics.evaluation.cheatsheet import load_reliability_snapshot
 from mlb_analytics.features.game_features import build_game_features
 from mlb_analytics.services.pipeline import AnalyticsService
+from mlb_analytics.ui.cheatsheet import render_cheat_sheet
 
 
 def probability_to_american(probability: float) -> str:
@@ -312,6 +314,17 @@ def display_batter_predictions(
     score_column = f"{target}_score"
     score_label_column = f"{target}_score_label"
     score_confidence_column = f"{target}_score_confidence"
+    signal_column = "hit_signal" if target == "hit" else "home_run_signal"
+    sample_note_column = (
+        "hit_score_sample_note"
+        if target == "hit"
+        else "home_run_score_sample_note"
+    )
+    pitch_score_column = (
+        "hit_pitch_type_score"
+        if target == "hit"
+        else "home_run_pitch_type_score"
+    )
 
     if team_rows.empty or probability_column not in team_rows.columns:
         st.info("No live prediction rows are available for this team.")
@@ -324,13 +337,19 @@ def display_batter_predictions(
     selected_columns = [
         "player_name",
         probability_column,
+        signal_column,
         score_column,
         score_label_column,
-        score_confidence_column,
+        pitch_score_column,
+        "pt_primary_pitch",
+        "pt_primary_pitch_usage",
+        "pt_pitch_mix_coverage",
         "batting_order",
         "projected_pa",
         "opponent_pitcher",
         confidence_column,
+        score_confidence_column,
+        sample_note_column,
         "lineup_status",
     ]
     selected_columns = [
@@ -339,27 +358,35 @@ def display_batter_predictions(
     output = team_rows[selected_columns].copy()
     rename_map = {
         "player_name": "Player",
-        probability_column: "Probability",
+        probability_column: "Calibrated probability",
+        signal_column: "Validated signal",
         score_column: "Score",
         score_label_column: "Score grade",
-        score_confidence_column: "Score data",
+        pitch_score_column: "Pitch-type score",
+        "pt_primary_pitch": "Primary pitch",
+        "pt_primary_pitch_usage": "Primary usage",
+        "pt_pitch_mix_coverage": "Pitch-mix coverage",
         "batting_order": "Projected order",
         "projected_pa": "Projected PA",
         "opponent_pitcher": "Opposing starter",
         confidence_column: "Model confidence",
+        score_confidence_column: "Score data",
+        sample_note_column: "Score evidence",
         "lineup_status": "Lineup status",
     }
     output = output.rename(columns=rename_map)
-    if "Probability" in output.columns:
-        output["Probability"] = output["Probability"].map(format_percent)
-    if "Score" in output.columns:
-        output["Score"] = output["Score"].map(
-            lambda value: format_number(value, 1)
-        )
-    if "Projected order" in output.columns:
-        output["Projected order"] = output["Projected order"].map(
-            lambda value: format_number(value, 1)
-        )
+    for column in [
+        "Calibrated probability",
+        "Primary usage",
+        "Pitch-mix coverage",
+    ]:
+        if column in output.columns:
+            output[column] = output[column].map(format_percent)
+    for column in ["Score", "Pitch-type score", "Projected order"]:
+        if column in output.columns:
+            output[column] = output[column].map(
+                lambda value: format_number(value, 1)
+            )
     if "Projected PA" in output.columns:
         output["Projected PA"] = output["Projected PA"].map(
             lambda value: format_number(value, 2)
@@ -369,7 +396,11 @@ def display_batter_predictions(
         width="stretch",
         hide_index=True,
     )
-
+    st.caption(
+        "Displayed probabilities are calibrated. The validated score remains a "
+        "separate quality grade; the pitch-type score is a new matchup layer and "
+        "must be revalidated after retraining."
+    )
 
 def display_pitcher_projection(
     predictions: pd.DataFrame,
@@ -380,7 +411,7 @@ def display_pitcher_projection(
         st.info("No strikeout projection is available for this probable starter.")
         return
     row = rows.iloc[0]
-    metrics = st.columns(3)
+    metrics = st.columns(4)
     metrics[0].metric(
         "Projected strikeouts",
         format_number(row.get("projected_strikeouts"), 2),
@@ -390,13 +421,24 @@ def display_pitcher_projection(
         format_number(row.get("pitcher_k_score"), 1),
     )
     metrics[2].metric(
-        "Score grade",
-        row.get("pitcher_k_score_label", "Unavailable"),
+        "K environment",
+        row.get("pitcher_k_signal", "Unavailable"),
+    )
+    metrics[3].metric(
+        "Lineup pitch-matchup score",
+        format_number(row.get("pitcher_k_lineup_matchup_score"), 1),
     )
     st.caption(
         f"Opponent: {row.get('opponent', 'Unknown')} · "
-        f"Score data confidence: {row.get('pitcher_k_score_confidence', 'Low')} · "
-        "Projection and score are separate outputs."
+        f"Primary pitch: {row.get('pt_primary_pitch', 'N/A')} "
+        f"({format_percent(row.get('pt_primary_pitch_usage'))}) · "
+        f"Projected-lineup whiff rate: {format_percent(row.get('pt_lineup_whiff_rate'))} · "
+        f"Pitch-mix coverage: {format_percent(row.get('pt_lineup_coverage'))} · "
+        f"Score data confidence: {row.get('pitcher_k_score_confidence', 'Low')}"
+    )
+    st.info(
+        "Use the K projection against the sportsbook line. The K Score and "
+        "pitch-type lineup score describe the environment; neither is itself a prop line."
     )
 
 def display_pitcher_metrics(
@@ -460,6 +502,9 @@ st.set_page_config(
 )
 
 svc = AnalyticsService(settings)
+reliability_snapshot = load_reliability_snapshot(
+    settings.reliability_snapshot_path
+)
 
 st.title("⚾ MLB Analytics Platform")
 st.caption(
@@ -497,8 +542,20 @@ with train_col:
                 training_results = svc.train_all()
 
             st.session_state["latest_training_results"] = training_results
-            print("TRAIN ALL MODELS COMPLETED", flush=True)
-            st.success("All models trained successfully.")
+            failed = {
+                name: result
+                for name, result in training_results.items()
+                if isinstance(result, dict) and result.get("error")
+            }
+            if failed:
+                print(f"TRAINING COMPLETED WITH ERRORS: {failed}", flush=True)
+                st.warning(
+                    f"Training finished with {len(failed)} model error(s). "
+                    "Review the results below before using new predictions."
+                )
+            else:
+                print("TRAIN ALL MODELS COMPLETED", flush=True)
+                st.success("All models trained successfully.")
 
         except Exception as exc:
             print(f"MODEL TRAINING FAILED: {exc}", flush=True)
@@ -840,6 +897,16 @@ with moneyline_tab:
         )
 
 with hits_tab:
+    with st.expander(
+        "📘 Hits cheat sheet — updates after each reliability evaluation",
+        expanded=False,
+    ):
+        render_cheat_sheet(
+            reliability_snapshot,
+            settings.model_dir,
+            market="hits",
+            compact=True,
+        )
     st.subheader("Model 1+ hit probabilities")
     st.caption(
         "Model probability and the 0–100 Hit Score are separate. The score "
@@ -865,6 +932,16 @@ with hits_tab:
             display_batter_table(home_batters, "hits")
 
 with hr_tab:
+    with st.expander(
+        "📘 Home run cheat sheet — updates after each reliability evaluation",
+        expanded=False,
+    ):
+        render_cheat_sheet(
+            reliability_snapshot,
+            settings.model_dir,
+            market="home_runs",
+            compact=True,
+        )
     st.subheader("Model home-run probabilities")
     st.caption(
         "Model probability is the calibrated event estimate. The 0–100 HR "
@@ -890,6 +967,16 @@ with hr_tab:
             display_batter_table(home_batters, "hr")
 
 with pitchers_tab:
+    with st.expander(
+        "📘 Pitcher strikeout cheat sheet — updates after each reliability evaluation",
+        expanded=False,
+    ):
+        render_cheat_sheet(
+            reliability_snapshot,
+            settings.model_dir,
+            market="strikeouts",
+            compact=True,
+        )
     st.subheader("Probable starter indicators")
     st.caption(
         "Metrics use up to the five most recent starts before the selected "

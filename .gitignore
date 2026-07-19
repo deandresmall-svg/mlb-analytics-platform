@@ -11,3 +11,10 @@ data/*.sqlite*
 models/*.joblib
 !data/.gitkeep
 !models/.gitkeep
+
+# Local databases and generated archives
+*.zip
+data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite3
