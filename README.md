@@ -60,11 +60,21 @@ PYTHONPATH=src streamlit run app/Home.py
 
 1. Push this folder to a GitHub repository.
 2. In Streamlit Community Cloud, choose the repository and branch.
-3. Use `app/Home.py` as the entrypoint.
+3. Use `streamlit_app.py` as the entrypoint.
 4. Select Python 3.12.
 5. Add secrets only when you introduce private providers. The included MLB and Open-Meteo sources do not require keys.
 
 Streamlit Community Cloud installs dependencies from `requirements.txt`. The app should not perform a multi-season backfill during page startup; build the database separately and use a persistent database for production.
+
+### Moneyline-first deployment workflow
+
+The root `streamlit_app.py` is the supported Streamlit Community Cloud entrypoint. Historical backfills and model training should run outside Streamlit:
+
+```bash
+PYTHONPATH=src python scripts/train_moneyline.py --start 2025-03-18 --end 2025-09-28
+```
+
+This creates `data/mlb_analytics.db` and `models/home_win.joblib`. Commit those trusted artifacts to a private repository or upload them through the dashboard sidebar. Only load model files that you created or trust because joblib files use Python serialization.
 
 ## Persistence warning
 
